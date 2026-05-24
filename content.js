@@ -50,10 +50,15 @@
     // Trim trailing space we added before the beacon.
     return title.slice(0, i).replace(/\s+$/, "");
   }
-  // Expose for live inspection.
+  // Expose for live inspection and macOS Hammerspoon integration.
   try {
     Object.defineProperty(window, "__copyurlLog", {
       get() { return _ring.slice(); },
+      configurable: true,
+    });
+    // __copyurlHoveredUrl: read by Hammerspoon via AppleScript JS execution on macOS.
+    Object.defineProperty(window, "__copyurlHoveredUrl", {
+      get() { return hoveredVideoUrl; },
       configurable: true,
     });
     window.__copyurlReady = true;
@@ -206,14 +211,16 @@
     true
   );
 
-  // F24 trigger: sent by copy.ahk (SendInput "{F24}") on Windows. F24 is used because
-  // it has no default browser/OS binding and won't collide with other tools' global
-  // hotkeys (e.g. CopyAnkitoChatGPT owns Alt+X system-wide). On macOS this listener
-  // is unused (Hammerspoon drives the page differently).
+  // F24 trigger: sent by copy.ahk (SendInput "{F24}") on Windows.
+  // Option+X trigger: sent by Hammerspoon on macOS (hs.eventtap.keyStroke({"alt"}, "x")).
+  // e.code === "KeyX" + e.altKey is used instead of e.key because Option+X on a US
+  // keyboard produces the Unicode character "≈" rather than the letter "x".
   document.addEventListener(
     "keydown",
     (e) => {
-      if ((e.key === "F24" || e.code === "F24") && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      const isF24 = (e.key === "F24" || e.code === "F24") && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
+      const isOptionX = e.code === "KeyX" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+      if (isF24 || isOptionX) {
         const ctx = {
           hovered: hoveredVideoUrl,
           x: lastClientX,
