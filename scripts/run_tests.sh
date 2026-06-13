@@ -100,6 +100,32 @@ else
   fi
 fi
 
+# ---- 5. full-system end-to-end (real copyurl.sh + ydotool + clipboard) ------
+# The deepest test: runs the GENUINE Linux/copyurl.sh orchestrator (real ydotool
+# "]" trigger, real wl-clipboard polling, real window activation) against a real
+# headful Brave + the real extension, and asserts the hovered URL reaches the OS
+# clipboard AND the Gemini composer — including an A->B->A stale-hover guard
+# through the real keystroke path. This is the exact layer the field bugs lived
+# in (permission bit, GNOME grab, clipboard detection).
+#
+# Opt-in: needs a real Wayland/X session + ydotoold, so it only runs when
+# COPYURL_FULL_SYSTEM=1. It also opens a visible browser window, so it's not
+# suitable for headless CI. Run locally with: COPYURL_FULL_SYSTEM=1 scripts/run_tests.sh
+note "full-system end-to-end (real copyurl.sh + ydotool)"
+if [[ "${COPYURL_FULL_SYSTEM:-0}" != "1" ]]; then
+  printf '  SKIP  set COPYURL_FULL_SYSTEM=1 to run (needs a real desktop session + ydotoold)\n'
+elif [[ ! -d node_modules/puppeteer-core ]]; then
+  printf '  SKIP  puppeteer-core not installed (run: npm install)\n'
+elif [[ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]]; then
+  printf '  SKIP  no display detected\n'
+else
+  if node tests/e2e/run_full_system.mjs 2>&1 | sed 's/^/    /'; then
+    ok "full-system flow (Alt+Z -> ydotool -> clipboard -> Gemini)"
+  else
+    bad "full-system flow failed (see output above)"
+  fi
+fi
+
 # ---- summary ---------------------------------------------------------------
 note "Summary"
 if (( fail == 0 )); then
