@@ -272,11 +272,13 @@
       // Linux "]" trigger: match by key only here, decide whether to act below.
       const isBracketKey = e.code === "BracketRight" && !e.ctrlKey && !e.metaKey;
       if (isF24 || isOptionX || isBracketKey) {
-        // Recover hover from the last pointer position. YouTube's hover overlay
-        // can fire a stray "mouseout" that clears hoveredVideoUrl even though the
-        // cursor is still parked on the thumbnail; without this, the very common
-        // "press Alt+Z while hovering" case intermittently copies nothing.
-        if (!hoveredVideoUrl) refreshHoverFromLastPointer();
+        // Always re-derive the hovered video from the live cursor position at
+        // trigger time. YouTube's hover overlay can leave a STALE hoveredVideoUrl
+        // (a stray "mouseout" that didn't clear, or a detached element after the
+        // grid re-renders), which previously made every press copy the same old
+        // URL and anchored the "Copied!" toast to an off-screen element. Refreshing
+        // unconditionally keeps the copied URL and the toast anchor correct.
+        refreshHoverFromLastPointer();
 
         // For the "]" trigger, only act when we actually have a hovered video so
         // normal "]" typing (search box, comments) is never swallowed.
@@ -390,9 +392,20 @@
 
     document.body.appendChild(toast);
 
-    // Position near the anchor element
-    if (anchor) {
-      const rect = anchor.getBoundingClientRect();
+    // Position near the anchor element — but only if the anchor is still attached
+    // and actually visible in the viewport. A detached/off-screen anchor (stale
+    // hover, re-rendered grid) yields a 0x0 or out-of-view rect, which would hide
+    // the toast; fall back to a fixed bottom-center position in that case.
+    const rect = anchor && anchor.isConnected ? anchor.getBoundingClientRect() : null;
+    const anchorVisible =
+      rect &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < window.innerHeight &&
+      rect.left < window.innerWidth;
+    if (anchorVisible) {
       toast.style.top = `${rect.top - toast.offsetHeight - 8}px`;
       toast.style.left = `${rect.left + rect.width / 2 - toast.offsetWidth / 2}px`;
 

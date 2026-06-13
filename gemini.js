@@ -289,5 +289,5 @@
     }
   }, 1500);
 
-  log("ready (v1.2.5) on", location.href);
+  log("ready (v1.2.6) on", location.href);
 })();
