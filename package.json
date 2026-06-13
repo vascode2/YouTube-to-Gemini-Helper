@@ -1,0 +1,13 @@
+{
+  "name": "copyyoutubeurl",
+  "version": "1.2.6",
+  "private": true,
+  "description": "Hover a YouTube thumbnail and copy/summarize its URL into Gemini.",
+  "scripts": {
+    "test": "bash scripts/run_tests.sh",
+    "test:e2e": "node tests/e2e/run_e2e.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^22.15.0"
+  }
+}

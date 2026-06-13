@@ -80,6 +80,26 @@ PY
   rm -f "$dom"
 fi
 
+# ---- 4. real-extension end-to-end (puppeteer) ------------------------------
+# Loads the ACTUAL unpacked extension into Brave, opens a YouTube + a Gemini
+# fixture in one profile, simulates a real hover + trigger keypress, and asserts
+# the hovered URL flows content.js -> chrome.storage -> gemini.js -> Send click.
+# This is the genuine cross-page handoff the single-page mock above cannot test.
+# Skipped (not failed) when puppeteer-core isn't installed, so the core suite
+# still runs in a bare checkout. Install with: npm install
+note "real-extension end-to-end (puppeteer)"
+if [[ ! -d node_modules/puppeteer-core ]]; then
+  printf '  SKIP  puppeteer-core not installed (run: npm install)\n'
+elif ! command -v node >/dev/null 2>&1; then
+  printf '  SKIP  node not found\n'
+else
+  if node tests/e2e/run_e2e.mjs 2>&1 | sed 's/^/    /'; then
+    ok "end-to-end flow (hover -> trigger -> Gemini paste + Send)"
+  else
+    bad "end-to-end flow failed (see output above)"
+  fi
+fi
+
 # ---- summary ---------------------------------------------------------------
 note "Summary"
 if (( fail == 0 )); then

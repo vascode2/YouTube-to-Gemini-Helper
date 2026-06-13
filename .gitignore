@@ -10,3 +10,5 @@ copyurl_last_winner.txt
 .DS_Store
 Thumbs.db
 .vscode/
+node_modules/
+package-lock.json
