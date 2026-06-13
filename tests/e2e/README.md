@@ -42,3 +42,27 @@ BRAVE_PATH=/usr/bin/google-chrome node tests/e2e/run_e2e.mjs   # different brows
 
 Or via the full suite: `bash scripts/run_tests.sh` (skips this step gracefully
 if `puppeteer-core` isn't installed).
+
+## Full-system test (`run_full_system.mjs`)
+
+`run_e2e.mjs` drives the trigger with CDP, so it proves the **extension** is
+correct but bypasses the OS layer. `run_full_system.mjs` goes one level deeper:
+it runs the **genuine** [Linux/copyurl.sh](../../Linux/copyurl.sh) orchestrator —
+real `ydotool type "]"`, real `wl-paste` clipboard polling, real window
+activation — against a real **headful** Brave + the real extension, and asserts
+the hovered URL reaches **both** the OS clipboard and the Gemini composer + Send.
+It also runs an A→B→A stale-hover guard through the real keystroke path.
+
+This is the exact layer the field failures lived in (the stripped executable
+bit, the GNOME key-grab, clipboard detection). It is **opt-in** because it needs
+a real desktop session:
+
+```bash
+COPYURL_FULL_SYSTEM=1 node tests/e2e/run_full_system.mjs   # or: npm run test:full
+COPYURL_FULL_SYSTEM=1 bash scripts/run_tests.sh            # as suite step 5
+```
+
+Requirements: a Wayland/X session, `ydotoold` running, and `wl-clipboard` +
+`gdbus` (the same deps `copyurl.sh` needs). A browser window will flash open
+while it runs, so it is not for headless CI.
+
