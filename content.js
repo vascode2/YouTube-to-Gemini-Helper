@@ -6,6 +6,46 @@
   let lastClientX = -1;
   let lastClientY = -1;
 
+  // Prompt prefix prepended to the copied URL when handing off to Gemini on Linux.
+  // The Linux flow cannot type non-ASCII/Korean via ydotool, so the Gemini content
+  // script (gemini.js) reads this payload from chrome.storage.local and inserts it
+  // into the composer via the DOM instead of relying on OS-level paste.
+  const PASTE_PREFIX = "한국말로 요약해줘 - ";
+  const PENDING_KEY = "copyurlPendingPaste";
+
+  /**
+   * Queue a Gemini paste payload for the Linux flow. The Gemini content script
+   * (gemini.js) consumes it from chrome.storage.local and submits it. No-op if the
+   * extension storage API is unavailable (e.g. older browsers or denied permission).
+   */
+  function queueGeminiPaste(url) {
+    // An orphaned content script (extension reloaded while this tab stayed open)
+    // still has a `chrome.storage` object, but calling it throws "Extension
+    // context invalidated". The copy half keeps working (execCommand is DOM-level),
+    // so without a visible signal the user sees "Copied!" but no paste. Surface it.
+    const orphaned = (() => {
+      try { return !(chrome && chrome.runtime && chrome.runtime.id); } catch { return true; }
+    })();
+    if (orphaned || typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+      console.warn(
+        "[CopyURL] storage unavailable (orphaned/updated extension) — reload this YouTube tab (Ctrl+R) to re-enable Gemini paste."
+      );
+      showToast(null, "Reload this YouTube tab (extension updated)");
+      return;
+    }
+    try {
+      chrome.storage.local.set({
+        [PENDING_KEY]: { text: PASTE_PREFIX + url, url, ts: Date.now() },
+      });
+      console.log("[CopyURL] queued Gemini paste for", url);
+      diag("queued_gemini_paste", { url });
+    } catch (err) {
+      console.warn("[CopyURL] failed to queue Gemini paste:", err);
+      showToast(null, "Reload this YouTube tab (extension updated)");
+      diag("queue_gemini_paste_fail", { err: String(err) });
+    }
+  }
+
   // ---- Diagnostics: ring buffer + title beacon ----------------------------
   // Ring buffer is gated behind localStorage.__copyurlDebug = "1" (cheap when off).
   // Title beacon is ALWAYS on: a transient zero-width-space + "[CU:STATE]" suffix
@@ -215,12 +255,35 @@
   // Option+X trigger: sent by Hammerspoon on macOS (hs.eventtap.keyStroke({"alt"}, "x")).
   // e.code === "KeyX" + e.altKey is used instead of e.key because Option+X on a US
   // keyboard produces the Unicode character "≈" rather than the letter "x".
+  // "]" (BracketRight) trigger: sent by Linux/copyurl.sh via `ydotool type "]"`.
+  // On GNOME Wayland, `ydotool key <code>` mangles keycodes (broken virtual-device
+  // keymap), but `ydotool type` reliably emits a character. "]" has no YouTube
+  // shortcut, and we only act on it while a thumbnail is hovered (so normal "]"
+  // typing elsewhere passes straight through). We deliberately do NOT require
+  // !altKey here: the GNOME hotkey is Alt+Z, so the user is often still holding
+  // Alt when copyurl.sh types "]" microseconds later — requiring !altKey made the
+  // first press fail (it only worked once Alt was released). Ctrl/Meta are still
+  // excluded so it won't collide with browser/OS chords.
   document.addEventListener(
     "keydown",
     (e) => {
       const isF24 = (e.key === "F24" || e.code === "F24") && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
       const isOptionX = e.code === "KeyX" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
-      if (isF24 || isOptionX) {
+      // Linux "]" trigger: match by key only here, decide whether to act below.
+      const isBracketKey = e.code === "BracketRight" && !e.ctrlKey && !e.metaKey;
+      if (isF24 || isOptionX || isBracketKey) {
+        // Recover hover from the last pointer position. YouTube's hover overlay
+        // can fire a stray "mouseout" that clears hoveredVideoUrl even though the
+        // cursor is still parked on the thumbnail; without this, the very common
+        // "press Alt+Z while hovering" case intermittently copies nothing.
+        if (!hoveredVideoUrl) refreshHoverFromLastPointer();
+
+        // For the "]" trigger, only act when we actually have a hovered video so
+        // normal "]" typing (search box, comments) is never swallowed.
+        if (isBracketKey && !hoveredVideoUrl) {
+          return; // let the keystroke through
+        }
+
         const ctx = {
           hovered: hoveredVideoUrl,
           x: lastClientX,
@@ -238,6 +301,12 @@
 
         e.preventDefault();
         e.stopPropagation();
+
+        // Linux flow: queue the Korean prompt + URL for the Gemini content script,
+        // which inserts and submits it via the DOM (ydotool cannot type Korean).
+        if (isBracketKey) {
+          queueGeminiPaste(hoveredVideoUrl);
+        }
 
         // Synchronous copy first: navigator.clipboard.writeText is async and AutoHotkey often
         // reads the clipboard before the promise resolves, pasting a stale URL into Gemini.
@@ -350,4 +419,45 @@
       setTimeout(() => toast.remove(), 250);
     }, 1500);
   }
+
+  // ---- Orphan watchdog ------------------------------------------------------
+  // Reloading the unpacked extension orphans THIS content script while the tab
+  // stays open: chrome.* stops working, so queueGeminiPaste can no longer hand
+  // the URL to Gemini even though execCommand copy still succeeds. Detect the
+  // invalidation (chrome.runtime.id becomes undefined) and show a persistent
+  // banner so the "Copied! but nothing pasted" failure is never silent.
+  let _orphanBannerShown = false;
+  function showReloadBanner() {
+    if (_orphanBannerShown) return;
+    _orphanBannerShown = true;
+    try {
+      const el = document.createElement("div");
+      el.textContent = "CopyURL: extension was updated — reload this YouTube tab (Ctrl+R) to re-enable Gemini paste.";
+      Object.assign(el.style, {
+        position: "fixed",
+        zIndex: "2147483647",
+        top: "0",
+        left: "0",
+        right: "0",
+        background: "#b3261e",
+        color: "#fff",
+        padding: "10px 14px",
+        font: "600 13px Roboto, Arial, sans-serif",
+        textAlign: "center",
+        boxShadow: "0 2px 10px rgba(0,0,0,.35)",
+        cursor: "pointer",
+      });
+      el.title = "Click to dismiss";
+      el.addEventListener("click", () => el.remove());
+      document.body.appendChild(el);
+    } catch {}
+  }
+  const _orphanWatch = setInterval(() => {
+    let alive = false;
+    try { alive = !!(chrome && chrome.runtime && chrome.runtime.id); } catch { alive = false; }
+    if (!alive) {
+      clearInterval(_orphanWatch);
+      showReloadBanner();
+    }
+  }, 1500);
 })();

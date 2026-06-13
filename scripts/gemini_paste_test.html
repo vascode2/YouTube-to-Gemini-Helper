@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>gemini paste test</title>
+</head>
+<body>
+  <!--
+    Faithful mock of Gemini's real composer, captured from the live DOM
+    (gemini.google.com BardChatUi, 2026-06-12). The real structure is:
+
+      <rich-textarea class="... ql-container ql-bubble ...">
+        <div class="ql-editor ql-blank textarea new-input-ui"
+             contenteditable="true" role="textbox" aria-multiline="true"
+             aria-label="Enter a prompt for Gemini"><p><br></p></div>
+        <div class="ql-clipboard" contenteditable="true" tabindex="-1"></div>
+      </rich-textarea>
+
+    Two faithfulness details that make this a real regression guard:
+      1) There are TWO contenteditable divs (ql-editor AND ql-clipboard); the
+         script must pick ql-editor, not the clipboard helper.
+      2) The send button starts DISABLED and only becomes enabled once the
+         editor holds text — exactly like the live Angular UI. This exercises
+         gemini.js's submit() "poll for an enabled send button" path.
+  -->
+  <rich-textarea class="text-input-field_textarea ql-container ql-bubble simplified-input">
+    <div class="ql-editor ql-blank textarea new-input-ui" data-gramm="false"
+         contenteditable="true" role="textbox" aria-multiline="true"
+         aria-label="Enter a prompt for Gemini" data-placeholder="Ask Gemini"><p><br></p></div>
+    <div class="ql-clipboard" contenteditable="true" tabindex="-1"></div>
+  </rich-textarea>
+  <div class="trailing-actions-wrapper">
+    <button class="send-button" aria-label="Send message" disabled aria-disabled="true">send</button>
+  </div>
+  <pre id="result">PENDING</pre>
+
+  <script>
+    // ---- chrome.storage shim ------------------------------------------------
+    const _store = {};
+    const _changeListeners = [];
+    window.chrome = {
+      storage: {
+        local: {
+          get(key, cb) {
+            const out = {};
+            if (typeof key === "string") { if (key in _store) out[key] = _store[key]; }
+            cb && cb(out);
+          },
+          set(obj, cb) {
+            const changes = {};
+            for (const k of Object.keys(obj)) {
+              changes[k] = { oldValue: _store[k], newValue: obj[k] };
+              _store[k] = obj[k];
+            }
+            cb && cb();
+            _changeListeners.forEach((fn) => fn(changes, "local"));
+          },
+          remove(key, cb) {
+            const keys = Array.isArray(key) ? key : [key];
+            const changes = {};
+            for (const k of keys) {
+              changes[k] = { oldValue: _store[k], newValue: undefined };
+              delete _store[k];
+            }
+            cb && cb();
+            _changeListeners.forEach((fn) => fn(changes, "local"));
+          },
+        },
+        onChanged: {
+          addListener(fn) { _changeListeners.push(fn); },
+        },
+      },
+    };
+
+    // Mirror Gemini: the send button is disabled until the editor has text.
+    const _editor = document.querySelector(".ql-editor");
+    const _sendBtn = document.querySelector(".send-button");
+    const _syncSendState = () => {
+      const hasText = (_editor.textContent || "").trim().length > 0;
+      _sendBtn.disabled = !hasText;
+      if (hasText) { _sendBtn.removeAttribute("aria-disabled"); _editor.classList.remove("ql-blank"); }
+      else { _sendBtn.setAttribute("aria-disabled", "true"); }
+    };
+    new MutationObserver(_syncSendState).observe(_editor, {
+      childList: true, characterData: true, subtree: true,
+    });
+
+    // Record send-button clicks (only count if it was actually enabled).
+    window.__sendClicked = 0;
+    window.__sendClickedWhileDisabled = 0;
+    _sendBtn.addEventListener("click", () => {
+      if (_sendBtn.disabled) window.__sendClickedWhileDisabled++;
+      else window.__sendClicked++;
+    });
+  </script>
+
+  <!-- Load the real content script under test. -->
+  <script src="../gemini.js"></script>
+
+  <script>
+    // Drive the test: queue a payload like content.js would, then verify.
+    const PAYLOAD = "한국말로 요약해줘 - https://www.youtube.com/watch?v=TEST123";
+    window.__runGeminiPasteTest = function () {
+      return new Promise((resolve) => {
+        chrome.storage.local.set({
+          copyurlPendingPaste: { text: PAYLOAD, url: "x", ts: Date.now() },
+        });
+        // gemini.js inserts immediately and submits after ~250ms (and may poll
+        // up to ~3s for the send button to enable). Give it room.
+        setTimeout(() => {
+          const editor = document.querySelector(".ql-editor");
+          const got = (editor.textContent || "").trim();
+          const pendingCleared = !("copyurlPendingPaste" in _store);
+          const res = {
+            inserted: got === PAYLOAD,
+            text: got,
+            sendClicked: window.__sendClicked,
+            sendClickedWhileDisabled: window.__sendClickedWhileDisabled,
+            pendingCleared,
+            pass:
+              got === PAYLOAD &&
+              window.__sendClicked === 1 &&
+              window.__sendClickedWhileDisabled === 0 &&
+              pendingCleared,
+          };
+          document.getElementById("result").textContent = JSON.stringify(res, null, 2);
+          document.title = "RESULT " + JSON.stringify(res);
+          resolve(res);
+        }, 1200);
+      });
+    };
+
+    // Auto-run for headless harness (brave --headless --dump-dom).
+    window.addEventListener("load", () => {
+      setTimeout(() => window.__runGeminiPasteTest(), 50);
+    });
+  </script>
+</body>
+</html>

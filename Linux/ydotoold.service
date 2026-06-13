@@ -1,0 +1,23 @@
+# ydotoold user service: runs the ydotool daemon that copyurl.sh talks to.
+#
+# Install (per-user, no root needed once the uinput udev rule is in place):
+#   mkdir -p ~/.config/systemd/user
+#   cp Linux/ydotoold.service ~/.config/systemd/user/ydotoold.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ydotoold.service
+#
+# The socket is created at $XDG_RUNTIME_DIR/ydotool/ydotoold.sock; copyurl.sh
+# auto-detects it (and other common paths). If your ydotoold lives elsewhere,
+# fix ExecStart below (check with: command -v ydotoold).
+
+[Unit]
+Description=ydotool daemon (virtual input for CopyURL)
+After=default.target
+
+[Service]
+ExecStart=/usr/bin/ydotoold --socket-path=%t/ydotool/ydotoold.sock --socket-perm=0600
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

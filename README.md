@@ -8,6 +8,8 @@
 
 **macOS?** A Hammerspoon port with the same workflow (cursorless, auto-test URL handlers, file logging at `~/Library/Logs/CopyURL.log`) lives in [Mac/](Mac/) — see [Mac/README.md](Mac/README.md). Hotkey is **Option+Z**.
 
+**Linux?** An Ubuntu / GNOME Wayland port (`ydotool` + `wl-clipboard` + the *Activate Window By Title* GNOME extension) lives in [Linux/](Linux/) — see [Linux/README.md](Linux/README.md). Hotkey is **Alt+Z** (bound via a GNOME custom shortcut).
+
 **Repo hooks:** This repo ships a `pre-commit` hook in [.githooks/pre-commit](.githooks/pre-commit) that auto-refreshes a "Recent activity" footer in `README.md`, `CLAUDE.md`, and `docs/troubleshooting.md` on every commit. After cloning, run once:
 ```sh
 git config core.hooksPath .githooks
@@ -38,7 +40,7 @@ git config core.hooksPath .githooks
 
 **Script notes:** `copy.ahk` activates **Brave** (`brave.exe`) for the YouTube step; switch to **`chrome.exe`** in `FindBraveWindow` if YouTube lives only in Chrome. Edit **`kGeminiPastePrefix`** at the top of `copy.ahk` to change or clear the text before the URL (`""` = URL only).
 
-This flow is **Windows-only** as documented above. For **macOS**, use the Hammerspoon port in [Mac/](Mac/) which provides the same hotkey-driven workflow with **Option+Z**. There is no Linux port in this repo.
+This flow is **Windows-only** as documented above. For **macOS**, use the Hammerspoon port in [Mac/](Mac/) (**Option+Z**). For **Linux** (Ubuntu / GNOME Wayland), use the port in [Linux/](Linux/) (**Alt+Z**, via `ydotool` + `wl-clipboard`).
 
 ---
 
