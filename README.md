@@ -8,7 +8,7 @@
 
 **macOS?** A Hammerspoon port with the same workflow (cursorless, auto-test URL handlers, file logging at `~/Library/Logs/CopyURL.log`) lives in [Mac/](Mac/) — see [Mac/README.md](Mac/README.md). Hotkey is **Option+Z**.
 
-**Linux?** An Ubuntu / GNOME Wayland port (`ydotool` + `wl-clipboard` + the *Activate Window By Title* GNOME extension) lives in [Linux/](Linux/) — see [Linux/README.md](Linux/README.md). Hotkey is **Alt+Z** (bound via a GNOME custom shortcut).
+**Linux?** An Ubuntu / GNOME Wayland port (`ydotool` + `wl-clipboard` + the *Activate Window By Title* GNOME extension) lives in [Linux/](Linux/) — see [Linux/README.md](Linux/README.md). Hotkey is **Alt+Z** (bound via a GNOME custom shortcut). It raises the Brave/YouTube window before sending the trigger, so Alt+Z works even when Brave isn't the focused window.
 
 **Repo hooks:** This repo ships a `pre-commit` hook in [.githooks/pre-commit](.githooks/pre-commit) that auto-refreshes a "Recent activity" footer in `README.md`, `CLAUDE.md`, and `docs/troubleshooting.md` on every commit. After cloning, run once:
 ```sh
