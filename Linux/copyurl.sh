@@ -3,8 +3,14 @@
 # Hotkey: Alt+Z  (bound via a GNOME custom keyboard shortcut -> this script)
 #
 # Flow (analog of the Windows copy.ahk / macOS init.lua):
-#   1) Send the trigger character "]" to the focused window (Brave, where you
-#      are hovering a YouTube thumbnail) via `ydotool type`. content.js copies
+#   0) Activate the Brave/YouTube window (via the "Activate Window By Title"
+#      GNOME extension) so the trigger keystroke lands in Brave even when Brave
+#      does NOT currently have keyboard focus (e.g. you are only HOVERING a
+#      thumbnail while another window is focused). The mouse cursor stays put,
+#      so content.js still resolves the hovered video via its last pointer
+#      position.
+#   1) Send the trigger character "]" to the (now focused) Brave window where you
+#      are hovering a YouTube thumbnail via `ydotool type`. content.js copies
 #      the hovered URL to the clipboard AND queues a Gemini paste payload in the
 #      extension's chrome.storage.local.
 #   2) Poll the clipboard (wl-paste) until a youtube.com URL appears, to confirm
@@ -35,11 +41,16 @@ set -uo pipefail
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
-CONFIG_VERSION="v4 2026-06-11 linux-first-press-alt-fix"
+CONFIG_VERSION="v5 2026-06-13 linux-activate-brave-before-trigger"
 
 # Substring matched (case-insensitive on the extension side) against window
 # titles to find the Gemini window. The PWA's title contains "Gemini".
 GEMINI_TITLE_NEEDLE="${COPYURL_GEMINI_NEEDLE:-Gemini}"
+
+# Substring matched against window titles to find the Brave/YouTube window so
+# the trigger keystroke can be delivered even when Brave is not focused. A
+# YouTube tab's title ends in "YouTube" (e.g. "... - YouTube - Brave").
+YOUTUBE_TITLE_NEEDLE="${COPYURL_YOUTUBE_NEEDLE:-YouTube}"
 
 # Trigger character typed into the browser to fire content.js. "]" has no
 # YouTube shortcut and content.js only acts on it while a thumbnail is hovered.
@@ -61,6 +72,10 @@ COPY_ATTEMPTS="${COPYURL_COPY_ATTEMPTS:-2}"
 
 # Delay (seconds) after activating the Gemini window, to let it come forward.
 GEMINI_FOCUS_DELAY="${COPYURL_GEMINI_FOCUS_DELAY:-0.35}"
+
+# Delay (seconds) after activating the Brave/YouTube window, to let it gain
+# keyboard focus before we type the trigger into it.
+BROWSER_FOCUS_DELAY="${COPYURL_BROWSER_FOCUS_DELAY:-0.2}"
 
 # Verbose logging (1 = on). Mirrors kVerboseLog in copy.ahk.
 VERBOSE="${COPYURL_VERBOSE:-1}"
@@ -154,20 +169,37 @@ send_trigger() {
 }
 
 # ----------------------------------------------------------------------------
-# Gemini window activation (Activate Window By Title GNOME extension)
+# Window activation (Activate Window By Title GNOME extension)
 # ----------------------------------------------------------------------------
-activate_gemini() {
-  local result
+# Activate the first window whose title contains $1. Returns 0 on success.
+activate_window_by_title() {
+  local needle="$1" result
   result=$(gdbus call --session \
     --dest org.gnome.Shell \
     --object-path /de/lucaswerkmeister/ActivateWindowByTitle \
     --method de.lucaswerkmeister.ActivateWindowByTitle.activateBySubstring \
-    "$GEMINI_TITLE_NEEDLE" 2>&1)
-  vlog "activate_gemini('$GEMINI_TITLE_NEEDLE') -> $result"
-  if [[ "$result" == *"true"* ]]; then
+    "$needle" 2>&1)
+  vlog "activate_window_by_title('$needle') -> $result"
+  [[ "$result" == *"true"* ]]
+}
+
+activate_gemini() {
+  if activate_window_by_title "$GEMINI_TITLE_NEEDLE"; then
     return 0
   fi
-  log "WARN: could not activate Gemini window (extension installed/enabled? title contains '$GEMINI_TITLE_NEEDLE'?): $result"
+  log "WARN: could not activate Gemini window (extension installed/enabled? title contains '$GEMINI_TITLE_NEEDLE'?)"
+  return 1
+}
+
+# Bring the Brave/YouTube window forward so the trigger keystroke lands in it
+# even when Brave is not the focused window. Non-fatal: if activation fails
+# (extension missing, no matching title), we still type the trigger into
+# whatever is focused, preserving the old behaviour.
+activate_youtube() {
+  if activate_window_by_title "$YOUTUBE_TITLE_NEEDLE"; then
+    return 0
+  fi
+  log "WARN: could not activate YouTube/Brave window (title contains '$YOUTUBE_TITLE_NEEDLE'? is a YouTube tab open and frontmost in Brave?)"
   return 1
 }
 
@@ -185,6 +217,12 @@ copy_url_from_browser() {
   COPIED_URL=""
   local sentinel="__copyurl_sentinel_$$_$(date +%s%N)"
   local attempt cur start now
+  # Bring Brave/YouTube to the front FIRST so the trigger keystroke is delivered
+  # to Brave even when another window currently holds keyboard focus. The mouse
+  # cursor is not moved, so content.js still sees the hovered thumbnail.
+  if activate_youtube; then
+    sleep "$BROWSER_FOCUS_DELAY"
+  fi
   # Brief settle so a still-held Alt (from Alt+Z) is released and ydotool warms up.
   sleep "$TRIGGER_SETTLE_DELAY"
   for (( attempt = 1; attempt <= COPY_ATTEMPTS; attempt++ )); do

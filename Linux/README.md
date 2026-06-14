@@ -32,7 +32,12 @@ pieces are the browser extension scripts ([../content.js](../content.js),
 
 Press **Alt+Z** while your mouse is over a YouTube thumbnail in Brave:
 
-1. Types the trigger character **`]`** into the focused Brave window via
+0. Activates the **Brave/YouTube** window (via the *Activate Window By Title*
+   GNOME extension) so the trigger keystroke lands in Brave **even when Brave is
+   not the focused window** — e.g. you are only *hovering* a thumbnail while a
+   different window has focus. Your mouse does not move, so `content.js` still
+   resolves the hovered video.
+1. Types the trigger character **`]`** into the Brave window via
    `ydotool type`. [../content.js](../content.js) then:
    - copies the hovered video URL to the clipboard, **and**
    - queues a Gemini paste payload (`<PASTE_PREFIX><url>`) in the extension's
@@ -71,7 +76,7 @@ Everything else is done where it is reliable:
 | Fire the content script | **`ydotool type "]"`** | Only working synthetic-input path; `]` has no YouTube shortcut and only acts while a thumbnail is hovered. |
 | Read clipboard (copy confirmation) | **`wl-clipboard`** (`wl-paste`) | Native Wayland clipboard. No `GetClipboardSequenceNumber`, so success = **polling** for a youtube URL. |
 | Insert the Korean prompt + submit | **[../gemini.js](../gemini.js)** content script | DOM insertion handles Unicode natively and needs no OS input; works even if the Gemini tab is in the background. |
-| Focus the Gemini window | **Activate Window By Title** GNOME extension | Wayland forbids apps from raising other windows; this trusted shell extension exposes a D-Bus method. |
+| Focus the Brave & Gemini windows | **Activate Window By Title** GNOME extension | Wayland forbids apps from raising other windows; this trusted shell extension exposes a D-Bus method. Brave is raised **before** the trigger so Alt+Z works without clicking Brave first. |
 | Global Alt+Z hotkey | **GNOME custom shortcut** | Wayland has no app-level global hotkey grab; GNOME runs the script. |
 
 ## Install
@@ -209,9 +214,11 @@ The shell knobs below are environment variables read at the top of
 | Variable | Default | Purpose |
 |---|---|---|
 | `COPYURL_TRIGGER_CHAR` | `]` | Character typed to fire `content.js`. |
-| `COPYURL_GEMINI_NEEDLE` | `Gemini` | Substring matched against window titles. |
+| `COPYURL_GEMINI_NEEDLE` | `Gemini` | Substring matched against window titles to find the Gemini window. |
+| `COPYURL_YOUTUBE_NEEDLE` | `YouTube` | Substring matched against window titles to find the Brave/YouTube window, raised before the trigger so Alt+Z works unfocused. |
 | `COPYURL_CLIP_TIMEOUT` | `1.5` | Seconds to wait per attempt for the clipboard to change. |
 | `COPYURL_COPY_ATTEMPTS` | `2` | Trigger retry count. |
+| `COPYURL_BROWSER_FOCUS_DELAY` | `0.2` | Pause after raising Brave, before typing the trigger. |
 | `COPYURL_GEMINI_FOCUS_DELAY` | `0.35` | Pause after raising Gemini. |
 | `COPYURL_VERBOSE` | `1` | Verbose logging (analog of `kVerboseLog` in copy.ahk). |
 | `COPYURL_LOG_FILE` | `~/.local/state/copyurl/copyurl_log.txt` | Log path. |
@@ -231,7 +238,7 @@ The shell knobs below are environment variables read at the top of
 |---|---|---|
 | `ydotool could not type the trigger` | `ydotoold` not running, or no `/dev/uinput` access | `systemctl --user status ydotoold`; redo step 2 (udev rule + `input` group) and re-login. |
 | `ydotool type` does nothing | Socket path mismatch | Ensure `YDOTOOL_SOCKET` matches the service's `--socket-path` (default `$XDG_RUNTIME_DIR/ydotool/ydotoold.sock`). |
-| "URL copy failed" | Brave wasn't focused, or `content.js` had a stale `hoveredVideoUrl` | Hover a thumbnail in the focused Brave window. Check DevTools console: `window.__copyurlLog` (set `localStorage.__copyurlDebug="1"`). |
+| "URL copy failed" | The Brave/YouTube window couldn't be raised (title doesn't contain `YouTube`, or the *Activate Window By Title* extension is off), or `content.js` had a stale `hoveredVideoUrl` | Make sure a YouTube tab is frontmost in Brave and the extension is enabled. Override the match with `COPYURL_YOUTUBE_NEEDLE`. Check DevTools console: `window.__copyurlLog` (set `localStorage.__copyurlDebug="1"`). |
 | Gemini not raised | Extension missing/disabled, or title needle wrong | Re-run the `gdbus` call in step 4; confirm `(true,)`. Adjust `COPYURL_GEMINI_NEEDLE`. |
 | URL copied but nothing pasted into Gemini | **Gemini is in a different browser/profile than the extension** (most common: Gemini in Chrome, YouTube+extension in Brave), or `gemini.js` not loaded / composer selector changed | Run Gemini as a **Brave app in the same profile** (step 5) — `chrome.storage` is per browser+profile, so a Chrome Gemini can't see Brave's payload. Then reload the extension (step 6). Open the Gemini window's DevTools console and look for `[CopyURL/Gemini] ready` and any errors. |
 | Pasted into the wrong field / not submitted | Gemini DOM changed | Update the composer/send selectors in [../gemini.js](../gemini.js). |

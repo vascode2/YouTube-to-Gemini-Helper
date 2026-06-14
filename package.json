@@ -1,6 +1,6 @@
 {
   "name": "copyyoutubeurl",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "private": true,
   "description": "Hover a YouTube thumbnail and copy/summarize its URL into Gemini.",
   "scripts": {
