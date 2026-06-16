@@ -58,6 +58,10 @@
       "rich-textarea .ql-editor[contenteditable='true']",
       ".ql-editor[contenteditable='true']",
       "div[contenteditable='true'][role='textbox']",
+      "div[contenteditable='true'][aria-label]",
+      "[contenteditable='true'][aria-label]",
+      "rich-textarea [contenteditable='true']",
+      "div[contenteditable='true']",
       "textarea[aria-label]",
       "textarea",
     ];
@@ -93,38 +97,79 @@
     });
   }
 
-  /** Insert text into the composer, firing the events the editor expects. */
-  function insertText(composer, text) {
-    composer.focus();
-    const isTextarea = composer.tagName === "TEXTAREA";
-    if (isTextarea) {
-      composer.value = text;
-      composer.dispatchEvent(new Event("input", { bubbles: true }));
-      return true;
-    }
-    // contenteditable (Quill / rich-textarea): execCommand fires proper input events.
+  /** Read the composer's current text, for textarea or contenteditable. */
+  function composerText(composer) {
+    if (!composer) return "";
+    if (composer.tagName === "TEXTAREA") return composer.value || "";
+    return (composer.innerText || composer.textContent || "").replace(/\u00A0/g, " ");
+  }
+
+  /** Select the composer's whole content so the next insertion replaces it. */
+  function selectAllInComposer(composer) {
     try {
       const sel = window.getSelection();
       sel.removeAllRanges();
       const range = document.createRange();
       range.selectNodeContents(composer);
-      range.collapse(false);
       sel.addRange(range);
     } catch {}
-    let ok = false;
-    try {
-      ok = document.execCommand("insertText", false, text);
-    } catch {
-      ok = false;
+  }
+
+  /**
+   * Insert text into the composer, firing the events the editor expects, and
+   * VERIFY it landed. Gemini's composer DOM/behaviour changes periodically, so
+   * we try several strategies and confirm the text is actually present before
+   * declaring success (the old code returned true unconditionally, which made a
+   * silent Gemini DOM change look like "copied but nothing pasted").
+   *
+   * Strategies, in order:
+   *   1. textarea: set .value + input event.
+   *   2. contenteditable: execCommand("insertText") (replaces current selection).
+   *   3. synthetic paste carrying a DataTransfer (Quill/ProseMirror honour paste).
+   *   4. direct textContent + InputEvent (last resort).
+   * After each, we read the composer back and stop as soon as the text is there.
+   *
+   * Returns true only if the composer actually contains the inserted text.
+   */
+  function insertText(composer, text) {
+    composer.focus();
+    const present = () => composerText(composer).indexOf(text) !== -1;
+
+    if (composer.tagName === "TEXTAREA") {
+      try {
+        composer.value = text;
+        composer.dispatchEvent(new Event("input", { bubbles: true }));
+      } catch {}
+      return present();
     }
-    if (!ok) {
-      // Fallback: set textContent and dispatch input.
+
+    // contenteditable (Quill / rich-textarea). Select existing content first so a
+    // re-trigger replaces the previous prompt instead of appending to it.
+    selectAllInComposer(composer);
+    try { document.execCommand("insertText", false, text); } catch {}
+    if (present()) return true;
+
+    // Fallback 1: synthetic paste event with a DataTransfer payload. Rich editors
+    // (Quill/ProseMirror, which Gemini uses) implement their own paste handler,
+    // so this is the most robust cross-version insertion path.
+    try {
+      selectAllInComposer(composer);
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      composer.dispatchEvent(
+        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt })
+      );
+    } catch {}
+    if (present()) return true;
+
+    // Fallback 2: set textContent directly and dispatch an input event.
+    try {
       composer.textContent = text;
       composer.dispatchEvent(
         new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" })
       );
-    }
-    return true;
+    } catch {}
+    return present();
   }
 
   /** Find an enabled send button using several strategies; null if none yet. */
@@ -216,7 +261,15 @@
       toast("composer not found (selectors may need updating)", false);
       return;
     }
-    insertText(composer, payload.text);
+    const inserted = insertText(composer, payload.text);
+    if (!inserted) {
+      // The composer exists but none of the insertion strategies stuck — almost
+      // always a Gemini editor DOM/behaviour change. Make it loud instead of the
+      // old silent "copied but nothing pasted".
+      log("insert failed: composer found but text did not land", composer.tagName, composer.className);
+      toast("could not type into Gemini composer (DOM changed?)", false);
+      return;
+    }
     log("inserted text", payload.text);
     setTimeout(() => submit(composer), SUBMIT_DELAY_MS);
   }
@@ -289,5 +342,5 @@
     }
   }, 1500);
 
-  log("ready (v1.2.7) on", location.href);
+  log("ready (v1.2.8) on", location.href);
 })();
