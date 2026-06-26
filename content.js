@@ -364,6 +364,35 @@
   }
 
   /**
+   * Return a usable on-screen bounding rect for the toast anchor. Starts at the
+   * given element and climbs up to a few ancestors until it finds one whose rect
+   * is non-degenerate and at least partly inside the viewport. This makes the
+   * toast survive YouTube's home-page inline-preview overlay, which collapses the
+   * a#thumbnail anchor to a 0-size rect (the renderer container above it is still
+   * solid). Returns null if nothing usable is found.
+   */
+  function bestVisibleRect(anchor) {
+    let el = anchor;
+    let depth = 0;
+    while (el && el.getBoundingClientRect && depth < 6) {
+      if (el.isConnected) {
+        const r = el.getBoundingClientRect();
+        const visible =
+          r.width > 0 &&
+          r.height > 0 &&
+          r.bottom > 0 &&
+          r.right > 0 &&
+          r.top < window.innerHeight &&
+          r.left < window.innerWidth;
+        if (visible) return r;
+      }
+      el = el.parentElement;
+      depth++;
+    }
+    return null;
+  }
+
+  /**
    * Show a small "Copied!" toast near the hovered element.
    */
   function showToast(anchor, message) {
@@ -371,41 +400,60 @@
     const existing = document.getElementById("copyurl-toast");
     if (existing) existing.remove();
 
+    const isSuccess = message === "Copied!";
+
     const toast = document.createElement("div");
     toast.id = "copyurl-toast";
-    toast.textContent = message;
     Object.assign(toast.style, {
       position: "fixed",
       zIndex: "2147483647",
-      background: "#323232",
-      color: "#fff",
-      padding: "6px 14px",
-      borderRadius: "6px",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "7px",
+      background: "rgba(28,28,30,0.96)",
+      color: "#F2F2F7",
+      padding: "9px 16px",
+      borderRadius: "12px",
       fontSize: "13px",
-      fontFamily: "Roboto, Arial, sans-serif",
-      fontWeight: "500",
-      boxShadow: "0 2px 8px rgba(0,0,0,.35)",
+      lineHeight: "1",
+      fontFamily: "Roboto, 'Segoe UI', Arial, sans-serif",
+      fontWeight: "600",
+      letterSpacing: "0.2px",
+      boxShadow: "0 8px 24px rgba(0,0,0,.45)",
+      backdropFilter: "blur(8px)",
+      WebkitBackdropFilter: "blur(8px)",
+      border: "1px solid rgba(255,255,255,0.08)",
       pointerEvents: "none",
       opacity: "0",
       transition: "opacity 0.2s ease",
+      whiteSpace: "nowrap",
     });
+
+    if (isSuccess) {
+      const check = document.createElement("span");
+      check.textContent = "✓";
+      Object.assign(check.style, {
+        color: "#30D158",
+        fontWeight: "700",
+        fontSize: "14px",
+      });
+      toast.appendChild(check);
+    }
+    const label = document.createElement("span");
+    label.textContent = message;
+    toast.appendChild(label);
 
     document.body.appendChild(toast);
 
-    // Position near the anchor element — but only if the anchor is still attached
-    // and actually visible in the viewport. A detached/off-screen anchor (stale
-    // hover, re-rendered grid) yields a 0x0 or out-of-view rect, which would hide
-    // the toast; fall back to a fixed bottom-center position in that case.
-    const rect = anchor && anchor.isConnected ? anchor.getBoundingClientRect() : null;
-    const anchorVisible =
-      rect &&
-      rect.width > 0 &&
-      rect.height > 0 &&
-      rect.bottom > 0 &&
-      rect.right > 0 &&
-      rect.top < window.innerHeight &&
-      rect.left < window.innerWidth;
-    if (anchorVisible) {
+    // Position the toast above the hovered video. The anchor we were handed is
+    // usually the <a> thumbnail link, but on the YouTube HOME page hovering a
+    // thumbnail makes YouTube swap in an inline video-preview overlay, which
+    // collapses a#thumbnail to a 0-size (or off-screen) rect. In that case we
+    // climb to the nearest ancestor that still has a real on-screen rect (the
+    // renderer/thumbnail container, which stays solid under the preview) so the
+    // bubble still appears right above the item instead of disappearing.
+    const rect = bestVisibleRect(anchor);
+    if (rect) {
       toast.style.top = `${rect.top - toast.offsetHeight - 8}px`;
       toast.style.left = `${rect.left + rect.width / 2 - toast.offsetWidth / 2}px`;
 
@@ -416,7 +464,10 @@
         toast.style.left = `${window.innerWidth - toast.offsetWidth - 8}px`;
       if (toastRect.top < 8) toast.style.top = `${rect.bottom + 8}px`;
     } else {
-      toast.style.bottom = "24px";
+      // No usable anchor at all — show it pinned near the TOP-center of the
+      // viewport (where the bubble historically appeared), not the bottom, so
+      // it's where the user is looking right after pressing the hotkey.
+      toast.style.top = "76px";
       toast.style.left = "50%";
       toast.style.transform = "translateX(-50%)";
     }

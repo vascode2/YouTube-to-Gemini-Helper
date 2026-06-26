@@ -29,7 +29,7 @@ Hover a YouTube thumbnail in Brave/Chrome → press **Alt+Z** (only user-facing 
 ## Architecture (3 cooperating processes)
 1. **Browser content script** ([content.js](content.js)) — tracks hovered video, listens for Alt+X, writes URL to clipboard via synchronous `document.execCommand("copy")` (with async `navigator.clipboard.writeText` fallback).
 2. **AutoHotkey v2 script** ([copy.ahk](copy.ahk)) — global Alt+Z handler. Activates Brave, syncs hover (PostMessage WM_MOUSEMOVE jitter), sends Alt+X, polls `GetClipboardSequenceNumber` until it changes, then drives Gemini paste.
-3. **Gemini Chrome PWA** — receives synthetic click + Ctrl+A/Ctrl+V/Enter.
+3. **Gemini Chrome PWA** — receives a synthetic "New chat" click (left-rail pencil), then a composer click + Ctrl+A/Ctrl+V/Enter. The new-chat click (since v2026-06-25.7) starts a fresh thread each time so a previously-refused conversation doesn't keep refusing the same URL.
 
 No background script, no native messaging, no host permissions beyond the YouTube content-script match.
 
@@ -57,6 +57,12 @@ No background script, no native messaging, no host permissions beyond the YouTub
 | 2026-05-02 | Cross-process telemetry via `document.title` suffix beacon | Zero new permissions, no native messaging, AHK can read via `WinGetTitle`. |
 | 2026-05-02 | All instrumentation behind flags, default OFF after Phase 5 | Keep code paths intact; zero behavior change. |
 | 2026-05-02 | Stress target = a fixed YouTube watch page with autoplay off | Reduce environmental variance during A/B testing. |
+| 2026-06-23 | Alt+Z fast path: copy the hovered video immediately when YouTube is already foreground (release Alt synthetically, send F24, no activation/jitter) before the Gemini handoff | Pins the copy to the thumbnail under the cursor at press time (moving the mouse afterward no longer changes what's copied), and lets the content-script "Copied!" toast render on the still-focused YouTube tab. `kToastDwellMs` (default 450) keeps YouTube in front briefly so the toast is visible. Slow/activation path unchanged as fallback. |
+| 2026-06-23 | Slow/activation path now syncs hover at the PRESS-TIME cursor (origX,origY captured at handler start) via `SyncChromiumHoverAtScreenPoint` instead of the live cursor; toast dwell (`kToastDwellMs`, now 900) moved to the common section so BOTH paths show the bubble | The slow path is hit on every copy after the first (focus moves to Gemini, so YouTube isn't foreground next press). It previously jittered at the live cursor → copied the moved-onto video and showed no toast. Syncing at the captured press-time point copies the originally-hovered video; PostMessage-only so the user's real cursor isn't snapped back. |
+| 2026-06-25 | AHK-native "Copied!" toast (`ShowCopiedToast`, `kAhkToast`) drawn by the script near the press-time cursor on every successful copy; `kToastDwellMs` defaulted back to 0 | The page's content-script bubble never reliably appeared once the flow switched to Gemini: it depends on a fresh content.js in the open tab AND the tab staying focused. Logs showed copy succeeding but `beacon=none` every time. A script-drawn click-through GUI is independent of browser/extension state, so the confirmation always shows; dwell no longer needed → no added Gemini latency. |
+| 2026-06-26 | Reverted to a SINGLE confirmation = the content-script bubble above the thumbnail. Disabled the AHK cursor toast (`kAhkToast := false`, code retained) and restored `kToastDwellMs` (0 → 700) so the page bubble is visible again on both paths. Restyled the content.js bubble to a modern rounded pill (12px radius, `rgba(28,28,30,.96)` fill, blur, green `✓` for success). | User reported two bubbles on the watch page (redundant) and the preferred upper/page bubble vanishing on the YouTube home page. Geometry confirmed upper = content.js page toast (above thumbnail), lower = AHK cursor toast. The home-page regression traced to `kToastDwellMs` 900→0 (YouTube dropped to background before the bubble was seen). Restoring dwell + disabling the AHK toast yields one nice bubble where the user wants it. Trade-off: dwell re-adds ~700ms before the Gemini paste; tunable (lower if YouTube is on a separate monitor). |
+| 2026-06-26 | Reverted per-paste new-chat (`kGeminiNewChatEachTime := false`, v2026-06-25.8). | User prefers keeping related summaries in ONE Gemini thread so the conversation builds on itself (videos are often on a related topic). The new-chat mechanism is retained behind the flag; flip back to true if a stale thread starts refusing videos again. |
+| 2026-06-26 | content.js `showToast` positioning hardened: new `bestVisibleRect(anchor)` climbs up to 6 ancestors to find a non-degenerate on-screen rect, and the no-anchor fallback moved from bottom-center (`bottom:24px`) to top-center (`top:76px`). | User: the "Copied!" bubble shows on the watch-page right panel but NOT on the YouTube home page; it used to appear "at the top of the screen." Root cause: on the home page, hovering a thumbnail makes YouTube swap in an inline video-preview overlay that collapses the `a#thumbnail` anchor to a 0-size rect → old `anchorVisible` check failed → toast fell back to bottom-center (off the user's view). Climbing to the still-solid renderer container (`ytd-rich-item-renderer` etc.) restores the above-thumbnail bubble; the top-center fallback keeps it visible even with no usable anchor. Watch-page case unchanged (anchor rect valid at depth 0). Requires extension reload in brave://extensions. |
 
 ## Diagnostic flags
 - **Extension**: set `localStorage.__copyurlDebug = "1"` on a youtube.com page (persisted). Enables ring buffer at `window.__copyurlLog` (last 200 events) and `console.debug("[CopyURL]", ...)` output. Title beacon is **always on** (cheap, invisible suffix using zero-width char + tag).
@@ -97,27 +103,19 @@ After every F24 keydown the extension processes, it appends ` ​[CU:STATE]` (ze
 <!-- This block is regenerated by .githooks/pre-commit on every commit.
      Do not edit by hand — your changes will be overwritten. -->
 
-**Last updated:** `2026-05-24T01:38:14Z`
+**Last updated:** `2026-06-26T04:34:41Z`
 
 **Recent commits (last 5 on HEAD):**
 
-- `8f88a66` feat(ahk): cursorless Gemini click + fast PixelSearch composer scan _(3 days ago)_
-- `95fe02d` Add Korean summary prefix to Gemini paste _(2 weeks ago)_
-- `cefe868` Remove 'Summarize this YouTube video:' prefix from Gemini paste _(2 weeks ago)_
-- `8f07262` fix(ahk): try-guard ReadTitleBeacon; loosen URL validator; grace-loop clipboard re-read _(3 weeks ago)_
-- `aeaf429` perf(ahk): sticky last-winner browser + fast-fail on beacon=none + tighter timeout (800ms) _(3 weeks ago)_
+- `9b35990` fix(gemini): robust, self-verifying composer insertion (v1.2.8) _(9 days ago)_
+- `6fa4348` docs: document unfocused-Brave Alt+Z behaviour (Linux) _(12 days ago)_
+- `2a82e67` fix(linux): make Alt+Z work when Brave is not the focused window _(12 days ago)_
+- `371b379` docs(tests): document the full-system test in tests/e2e/README _(13 days ago)_
+- `acc5247` test(full-system): run the REAL copyurl.sh + ydotool + clipboard end to end _(13 days ago)_
 
 **Files in the pending commit:**
 
-- `.githooks/pre-commit`
-- `.gitignore`
 - `CLAUDE.md`
-- `Mac/README.md`
-- `Mac/hammerspoon/init.lua`
-- `README.md`
 - `content.js`
 - `copy.ahk`
-- `docs/CopyYoutubeURL-explainer.html`
-- `docs/troubleshooting.md`
-- `scripts/chrome_test.ahk`
 <!-- AUTO:RECENT-ACTIVITY:END -->
