@@ -151,7 +151,10 @@ async function main() {
       return t ? t.textContent : null;
     });
     results.toast = toastText;
-    if (toastText === "Copied!") log("  PASS  toast 'Copied!' shown on YouTube");
+    // content.js renders a success toast as a green "✓" span + a "Copied!"
+    // label span, so textContent is "✓Copied!". Assert the label is present
+    // rather than exact-matching (which broke when the checkmark was added).
+    if (toastText && toastText.includes("Copied!")) log("  PASS  'Copied!' toast shown on YouTube");
     else fail(`toast not shown (got ${JSON.stringify(toastText)})`);
 
     // Give gemini.js time to receive the storage change, insert, and submit.
