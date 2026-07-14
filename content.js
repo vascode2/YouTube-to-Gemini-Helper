@@ -53,7 +53,12 @@
   // STATE values: ok | null | execfail | asyncpending | asyncok | asyncfail | notready
   const BEACON_PREFIX = "\u200B[CU:";
   const BEACON_SUFFIX = "]";
-  const BEACON_TTL_MS = 300;
+  // 700 ms (not 300): on macOS the Hammerspoon flow reads this beacon via the
+  // Brave WINDOW title (youtubeWin:title()), and Brave's document.title ->
+  // window-title propagation can lag a few hundred ms. A short TTL made the read
+  // race and report a false "no-beacon". Windows/AHK reads it immediately, so the
+  // longer TTL is harmless there (the suffix is an invisible zero-width tag).
+  const BEACON_TTL_MS = 700;
   let _beaconTimer = null;
   let _beaconBaseTitle = null;
   const _ringEnabled = (() => {
@@ -171,7 +176,14 @@
           tag === "ytd-grid-video-renderer" ||
           tag === "ytd-video-renderer" ||
           tag === "ytd-rich-grid-media" ||
-          tag === "ytd-playlist-video-renderer"
+          tag === "ytd-playlist-video-renderer" ||
+          // Home/subscription-page inline hover preview. When YouTube plays the
+          // muted preview, the cursor sits over this shared overlay (moved out of
+          // the thumbnail's renderer), so the normal ancestor walk finds no <a>.
+          // The overlay contains a#media-container-link -> /watch?v=…, which the
+          // container fallback query below resolves.
+          tag === "ytd-video-preview" ||
+          current.id === "video-preview"
         ) {
           container = current;
         }

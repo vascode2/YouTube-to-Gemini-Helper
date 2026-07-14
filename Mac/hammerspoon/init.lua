@@ -7,7 +7,7 @@
 -- 4) Paste "summarize this video: <url>" and press Enter
 -- 5) Restore clipboard to plain URL
 
-local CONFIG_VERSION = "v21 2026-07-03 ax-focus-composer"
+local CONFIG_VERSION = "v22 2026-07-13 beacon-diagnostics"
 
 local hotkey = {"alt"}
 local key = "z"
@@ -285,24 +285,42 @@ local function runFlowInner()
   -- Triggers content.js in-page copy action (Option+X).
   hs.eventtap.keyStroke({ "alt" }, "x", 0)
 
-  -- Wait up to 2 s for the clipboard to actually change.
+  -- Wait up to 2 s for the clipboard to actually change. Capture the content.js
+  -- title beacon ("[CU:STATE]") DURING this loop: its TTL is short (~700 ms), so
+  -- reading it after the wait could miss it. STATE ∈
+  -- ok|null|execfail|asyncok|asyncfail. "no-beacon" means content.js never
+  -- handled the Option+X (extension not loaded / not on a youtube.com tab /
+  -- orphaned after an extension update -> reload the tab).
   local copiedUrl = ""
+  local beacon = "no-beacon"
   local deadline = hs.timer.secondsSinceEpoch() + 2
   while hs.timer.secondsSinceEpoch() < deadline do
-    sleep(0.08)
+    if beacon == "no-beacon" then
+      local m = (youtubeWin:title() or ""):match("%[CU:(%a+)%]")
+      if m then beacon = m end
+    end
+    sleep(0.05)
     local changedNow = hs.pasteboard.changeCount() ~= changeBefore
     local cur = hs.pasteboard.getContents() or ""
     if cur:find("youtube%.com") and (changedNow or cur ~= clipBefore) then
       copiedUrl = cur
       break
     end
+    -- Stop early once we know the copy can't succeed (hover was empty).
+    if beacon == "null" then break end
   end
-  logLine(string.format("copy-wait done: changed=%s len=%d",
+  logLine(string.format("copy-wait done: changed=%s len=%d beacon=%s",
     tostring(hs.pasteboard.changeCount() ~= changeBefore),
-    #(hs.pasteboard.getContents() or "")))
+    #(hs.pasteboard.getContents() or ""), beacon))
 
   if copiedUrl == "" then
-    notify("URL copy failed. Hover a thumbnail, then try again.")
+    if beacon == "null" then
+      notify("No thumbnail under cursor. Hover a video, then try again.")
+    elseif beacon == "no-beacon" then
+      notify("Extension didn't respond. Reload the YouTube tab (Cmd+R).")
+    else
+      notify("URL copy failed (beacon=" .. beacon .. "). Try again.")
+    end
     return
   end
 
