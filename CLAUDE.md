@@ -3,25 +3,34 @@
 > Living handoff doc. Update at every phase boundary. Future agent sessions should read this first.
 
 ## ⚠️ Runtime location of copy.ahk (read this first)
-The user runs [copy.ahk](copy.ahk) from the **Windows Startup folder**, not from this repo. After every edit to the workspace copy you MUST mirror it to:
+As of 2026-07-14 the project lives in a **local Git clone** and Startup launches it
+**directly** — there is **no more mirror/copy step**:
 
-```
-C:\Users\Yoon\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\copy.ahk
-```
+- **Authoritative working copy (edit here):** `C:\Users\Yoon\Projects\CopyYoutubeURL\copy.ahk`
+- **How it starts at login:** `...\Startup\copy.ahk.lnk` (a shortcut) runs
+  `AutoHotkey64.exe "C:\Users\Yoon\Projects\CopyYoutubeURL\copy.ahk"`.
+  There is **no raw `copy.ahk` in the Startup folder anymore** (the old one was
+  archived as `Startup\copy.ahk.pre-migration-backup`).
+- **Running log:** `copyurl_log.txt` now sits **next to the clone's copy.ahk**
+  (`A_ScriptDir` = the clone). It is **gitignored**, so it never dirties the repo.
+  Read it from `C:\Users\Yoon\Projects\CopyYoutubeURL\copyurl_log.txt` when diagnosing.
 
-and verify by SHA256 match. The running log [copyurl_log.txt](copyurl_log.txt) also lives next to that Startup copy (`A_ScriptDir`), not in this repo — read it from the Startup folder when diagnosing. Reload after copying: tray icon → Reload Script (workspace `copyurl_log.txt` will usually be absent/stale).
+**Edit loop (no copying):** edit `copy.ahk` in the clone → tray icon → **Reload Script**
+(or `/validate` first). That's it.
 
-PowerShell one-liner (validate → sync → hash-check):
+Optional validate before reloading:
 
 ```powershell
-& "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe" /ErrorStdOut /validate "g:\My Drive\Projects\CopyYoutubeURL\copy.ahk"
-if ($LASTEXITCODE -eq 0) {
-    Copy-Item "g:\My Drive\Projects\CopyYoutubeURL\copy.ahk" `
-              "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\copy.ahk" -Force
-    (Get-FileHash "g:\My Drive\Projects\CopyYoutubeURL\copy.ahk" -Algorithm SHA256).Hash
-    (Get-FileHash "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\copy.ahk" -Algorithm SHA256).Hash
-}
+& "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe" /ErrorStdOut /validate `
+  "C:\Users\Yoon\Projects\CopyYoutubeURL\copy.ahk"
 ```
+
+> Historical note: this repo used to run from Google Drive
+> (`G:\My Drive\Projects\CopyYoutubeURL`) and required a validate → copy-to-Startup →
+> SHA256 hash-check mirror ritual. That folder's `.git` became corrupted, so the
+> project was re-cloned fresh from GitHub into `C:\Users\Yoon\Projects` and the
+> Drive copy retired (renamed `..._backup`). If you see references to `My Drive` /
+> `g:\...\copy.ahk` anywhere, they are stale.
 
 ## What this project does
 Hover a YouTube thumbnail in Brave/Chrome → press **Alt+Z** (only user-facing hotkey) → AutoHotkey activates the YouTube window, sends **F24** inside the tab as the internal extension trigger (F24 chosen to avoid collision with other tools' global hotkeys, e.g. CopyAnkitoChatGPT owns Alt+X), the extension copies the hovered video's URL to the OS clipboard, then AHK switches to the Gemini Chrome app and pastes a "Summarize this YouTube video:" prompt + URL and presses Enter.
@@ -64,6 +73,7 @@ No background script, no native messaging, no host permissions beyond the YouTub
 | 2026-06-26 | Reverted per-paste new-chat (`kGeminiNewChatEachTime := false`, v2026-06-25.8). | User prefers keeping related summaries in ONE Gemini thread so the conversation builds on itself (videos are often on a related topic). The new-chat mechanism is retained behind the flag; flip back to true if a stale thread starts refusing videos again. |
 | 2026-06-26 | content.js `showToast` positioning hardened: new `bestVisibleRect(anchor)` climbs up to 6 ancestors to find a non-degenerate on-screen rect, and the no-anchor fallback moved from bottom-center (`bottom:24px`) to top-center (`top:76px`). | User: the "Copied!" bubble shows on the watch-page right panel but NOT on the YouTube home page; it used to appear "at the top of the screen." Root cause: on the home page, hovering a thumbnail makes YouTube swap in an inline video-preview overlay that collapses the `a#thumbnail` anchor to a 0-size rect → old `anchorVisible` check failed → toast fell back to bottom-center (off the user's view). Climbing to the still-solid renderer container (`ytd-rich-item-renderer` etc.) restores the above-thumbnail bubble; the top-center fallback keeps it visible even with no usable anchor. Watch-page case unchanged (anchor rect valid at depth 0). Requires extension reload in brave://extensions. |
 | 2026-07-13 | (macOS) `findVideoAnchor` now recognizes the home-page inline preview overlay (`ytd-video-preview` / `#video-preview`) as a container; its `#media-container-link` (`/watch?v=…`) is resolved by the existing container fallback query. Mac `init.lua` (v22) reads the content.js title beacon during the copy-wait loop and logs `beacon=STATE`, with distinct notifications for `null` (no thumbnail under cursor) vs `no-beacon` (extension didn't respond → reload tab). `BEACON_TTL_MS` 300→700 so the macOS document.title→window-title propagation doesn't lose the beacon read. | User reported "URL copy failed" on the YouTube **home page**; log showed `copy-wait done: changed=false len=7526` (clipboard never written). On the home page the inline muted preview steals the element under the cursor out of the thumbnail's renderer, so the ancestor walk found no `<a>` → `hoveredVideoUrl` null → early return, no copy. Watch pages resolve the anchor directly, hence the intermittency. Beacon logging makes future failures self-diagnosing on macOS (previously only Windows/AHK surfaced it). Requires extension reload in brave://extensions + YouTube tab reload to pick up content.js. |
+| 2026-07-14 | Migrated Windows dev out of Google Drive to a fresh GitHub clone at `C:\Users\Yoon\Projects\CopyYoutubeURL`. Startup now runs the clone directly via `Startup\copy.ahk.lnk` (shortcut → `AutoHotkey64.exe "<clone>\copy.ahk"`); the old raw `Startup\copy.ahk` was archived as `copy.ahk.pre-migration-backup`. Added `.gitattributes` (LF policy) + fixed the stale E2E toast assertion (`✓Copied!`). Git identity set globally (`vascode2`). | The Drive folder's `.git` was corrupted (`git fsck`: bad objects/refs, no resolvable HEAD) and Google Drive's CRLF/exec-bit churn kept dirtying the tree. GitHub already had the newest state (Drive copy only differed by an OLDER package-lock 1.2.6 vs 1.2.8 + line endings), so nothing needed recovery. Running from the clone removes the fragile validate→copy→hash-check mirror ritual: edit in the clone, tray → Reload Script. |
 
 ## Diagnostic flags
 - **Extension**: set `localStorage.__copyurlDebug = "1"` on a youtube.com page (persisted). Enables ring buffer at `window.__copyurlLog` (last 200 events) and `console.debug("[CopyURL]", ...)` output. Title beacon is **always on** (cheap, invisible suffix using zero-width char + tag).
@@ -104,21 +114,18 @@ After every F24 keydown the extension processes, it appends ` ​[CU:STATE]` (ze
 <!-- This block is regenerated by .githooks/pre-commit on every commit.
      Do not edit by hand — your changes will be overwritten. -->
 
-**Last updated:** `2026-07-14T22:05:12Z`
+**Last updated:** `2026-07-14T22:27:02Z`
 
 **Recent commits (last 5 on HEAD):**
 
-- `f35efb5` chore: sync package-lock version to 1.2.8 (regenerated by npm install) _(30 minutes ago)_
-- `186813d` chore: track package-lock.json, untrack generated test log, tidy .gitignore _(32 minutes ago)_
-- `d00a3fa` feat(mac): add Cmd/Ctrl+scroll-wheel page zoom to Hammerspoon config _(44 minutes ago)_
+- `a00001e` chore: enforce LF line endings + fix stale E2E toast assertion _(22 minutes ago)_
+- `f35efb5` chore: sync package-lock version to 1.2.8 (regenerated by npm install) _(52 minutes ago)_
+- `186813d` chore: track package-lock.json, untrack generated test log, tidy .gitignore _(54 minutes ago)_
+- `d00a3fa` feat(mac): add Cmd/Ctrl+scroll-wheel page zoom to Hammerspoon config _(66 minutes ago)_
 - `ee51033` fix(mac): home-page hover preview anchor + v22 beacon diagnostics _(5 hours ago)_
-- `1b1fe28` fix(mac): reliable Gemini paste via AX composer focus + async activate _(12 days ago)_
 
 **Files in the pending commit:**
 
-- `.gitattributes`
-- `copy.ahk`
-- `docs/CopyYoutubeURL-explainer.html`
-- `scripts/chrome_test.ahk`
-- `tests/e2e/run_e2e.mjs`
+- `CLAUDE.md`
+- `README.md`
 <!-- AUTO:RECENT-ACTIVITY:END -->
