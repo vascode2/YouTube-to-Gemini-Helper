@@ -449,3 +449,40 @@ hs.urlevent.bind("copyurl-reload", function() logLine("url-event: copyurl-reload
 
 logLine("config loaded; version=" .. CONFIG_VERSION .. "; Option+Z bound")
 notify("CopyURL " .. CONFIG_VERSION)
+
+-- =========================================================================
+-- Ctrl + mouse wheel = zoom  (Windows-style page zoom)
+-- -------------------------------------------------------------------------
+-- On this machine Karabiner swaps physical left_control -> left_command, so a
+-- physical Ctrl press reaches macOS/Hammerspoon as the Cmd flag. Browsers zoom
+-- the page with Cmd+= / Cmd+- (which the user already triggers via "Ctrl"+/-).
+-- Here we catch Cmd + scroll-wheel and translate each wheel notch into a zoom
+-- keystroke, consuming the scroll so the page does not also scroll.
+--   wheel up   -> Cmd+=  (zoom in)
+--   wheel down -> Cmd+-  (zoom out)
+-- If the direction feels reversed, swap "=" and "-" below.
+-- =========================================================================
+local function scrollZoomIsModifier(flags)
+  -- Only the Cmd flag (== physical Ctrl after the swap). Ignore other big
+  -- modifiers so we never hijack Cmd+Shift+scroll etc.
+  return flags.cmd and not flags.ctrl and not flags.alt and not flags.fn
+end
+
+zoomScrollTap = hs.eventtap.new({ hs.eventtap.event.types.scrollWheel }, function(e)
+  local flags = e:getFlags()
+  if not scrollZoomIsModifier(flags) then
+    return false
+  end
+  local dy = e:getProperty(hs.eventtap.event.properties.scrollWheelEventDeltaAxis1)
+  if dy == 0 then
+    return true
+  end
+  if dy > 0 then
+    hs.eventtap.keyStroke({ "cmd" }, "=", 0)   -- zoom in
+  else
+    hs.eventtap.keyStroke({ "cmd" }, "-", 0)   -- zoom out
+  end
+  return true  -- swallow the original scroll so the page doesn't scroll too
+end)
+zoomScrollTap:start()
+logLine("ctrl-scroll-zoom tap started (enabled=" .. tostring(zoomScrollTap:isEnabled()) .. ")")
