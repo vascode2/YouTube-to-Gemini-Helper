@@ -5,6 +5,7 @@
   let hoveredElement = null;
   let lastClientX = -1;
   let lastClientY = -1;
+  const EXT_VERSION = globalThis.chrome?.runtime?.getManifest?.().version || "unknown";
 
   // ---- Diagnostics: ring buffer + title beacon ----------------------------
   // Ring buffer is gated behind localStorage.__copyurlDebug = "1" (cheap when off).
@@ -56,6 +57,10 @@
       get() { return _ring.slice(); },
       configurable: true,
     });
+    Object.defineProperty(window, "__copyurlVersion", {
+      get() { return EXT_VERSION; },
+      configurable: true,
+    });
     // __copyurlHoveredUrl: read by Hammerspoon via AppleScript JS execution on macOS.
     Object.defineProperty(window, "__copyurlHoveredUrl", {
       get() { return hoveredVideoUrl; },
@@ -64,7 +69,7 @@
     window.__copyurlReady = true;
     window.dispatchEvent(new CustomEvent("copyurl-ready"));
   } catch {}
-  diag("loaded", { url: location.href, ringEnabled: _ringEnabled });
+  diag("loaded", { url: location.href, ringEnabled: _ringEnabled, version: EXT_VERSION });
 
   function refreshHoverFromLastPointer() {
     if (lastClientX < 0 || lastClientY < 0) return;
