@@ -11,7 +11,7 @@ Press **Option+Z** while your mouse is over a YouTube thumbnail in Brave/Chrome:
 3. Sends **Option+X** so `content.js` copies the hovered URL to the clipboard.
 4. Polls the clipboard until a `youtube.com` URL appears (up to 2 s).
 5. Activates the Gemini Safari WebApp / PWA (window title contains `Gemini`).
-6. Pastes `<pastePrefix><url>` via `Cmd+V` and presses Enter.
+6. Pastes `<url><pasteSuffix>` via `Cmd+V` and presses Enter.
 7. Restores the clipboard to the plain URL.
 
 ## Install
@@ -36,7 +36,7 @@ Variables at the top of [hammerspoon/init.lua](hammerspoon/init.lua):
 | `hotkey` / `key` | `{"alt"}`, `"z"` | Trigger chord (Option+Z). |
 | `youtubeApps` | `{"Brave Browser", "Google Chrome"}` | Browsers to search for a YouTube window, in priority order. |
 | `geminiTitleNeedle` | `"gemini"` | Substring matched against window titles to find Gemini. |
-| `pastePrefix` | `"한국어로 요약해줘 "` | Text prepended to the URL before Cmd+V. Set `""` to paste just the URL. |
+| `pasteSuffix` | `" 한국어로 요약해 줘"` | Text appended after the URL before Cmd+V. Set `""` to paste just the URL. |
 | `CONFIG_VERSION` | `"vN …"` | Stamp logged on load and shown in the ready toast — bumped on every script change so you can confirm the live build matches the file. |
 
 ## Live reload & logs

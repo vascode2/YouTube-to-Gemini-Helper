@@ -20,7 +20,7 @@ local geminiTitleNeedle = "gemini"
 -- "Gemini" (e.g. tutorials) lives in a Brave window and would otherwise be
 -- selected as the "Gemini" target — causing the paste to land in Brave.
 local geminiBundleId = "com.apple.Safari.WebApp.0D968D29-0354-49AB-9CD2-1B1FA685FFBB"
-local pastePrefix = "한국어로 요약해줘 "
+local pasteSuffix = " 한국어로 요약해 줘"
 
 -- Seconds to keep the YouTube window frontmost after a successful copy, before
 -- switching to Gemini, so the content.js "Copied!" bubble is actually visible.
@@ -343,7 +343,7 @@ local function runFlowInner()
 
   -- Build payload and put it on clipboard BEFORE touching Gemini's focus,
   -- so the clipboard is ready the moment Cmd+V lands.
-  local payload = pastePrefix .. copiedUrl
+  local payload = copiedUrl .. pasteSuffix
   hs.pasteboard.setContents(payload)
   logLine("pasting payload len=" .. #payload)
 
@@ -410,7 +410,7 @@ local function runPasteOnlyTest()
     return
   end
   local app = geminiWin:application()
-  local payload = pastePrefix .. fakeUrl
+  local payload = fakeUrl .. pasteSuffix
   hs.pasteboard.setContents(payload)
   logLine("paste-test payload len=" .. #payload .. " url=" .. fakeUrl)
   activateAndWait(app, geminiWin, 2.0, function(ok)

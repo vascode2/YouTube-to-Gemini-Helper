@@ -6,11 +6,11 @@
   let lastClientX = -1;
   let lastClientY = -1;
 
-  // Prompt prefix prepended to the copied URL when handing off to Gemini on Linux.
+  // Prompt suffix appended after the copied URL when handing off to Gemini on Linux.
   // The Linux flow cannot type non-ASCII/Korean via ydotool, so the Gemini content
   // script (gemini.js) reads this payload from chrome.storage.local and inserts it
   // into the composer via the DOM instead of relying on OS-level paste.
-  const PASTE_PREFIX = "한국말로 요약해줘 - ";
+  const PASTE_SUFFIX = " 한국말로 요약해줘";
   const PENDING_KEY = "copyurlPendingPaste";
 
   /**
@@ -35,7 +35,7 @@
     }
     try {
       chrome.storage.local.set({
-        [PENDING_KEY]: { text: PASTE_PREFIX + url, url, ts: Date.now() },
+        [PENDING_KEY]: { text: url + PASTE_SUFFIX, url, ts: Date.now() },
       });
       console.log("[CopyURL] queued Gemini paste for", url);
       diag("queued_gemini_paste", { url });

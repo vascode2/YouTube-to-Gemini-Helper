@@ -103,7 +103,7 @@ After every F24 keydown the extension processes, it appends ` ​[CU:STATE]` (ze
 
 ## Platform ports (kept in separate folders, extension is shared)
 - macOS port: `Mac/` (Hammerspoon, **Option+Z**).
-- Linux port: `Linux/` (Ubuntu/GNOME Wayland; `ydotool` + `wl-clipboard` + *Activate Window By Title* GNOME extension; **Alt+Z** via GNOME custom shortcut). Orchestrator: `Linux/copyurl.sh`. On this Wayland setup `ydotool key`/`mousemove` are unreliable, so the trigger is `ydotool type "]"` (content.js also fires on `]`/BracketRight while hovering) and the **paste is done in-browser**: content.js queues `PASTE_PREFIX`+URL into `chrome.storage.local`, and a Gemini content script (`gemini.js`, matches `gemini.google.com`) inserts it into the composer via the DOM and clicks send. Copy success is detected by polling `wl-paste` (no clipboard sequence number on Wayland). Requires the `storage` permission. See `Linux/README.md`.
+- Linux port: `Linux/` (Ubuntu/GNOME Wayland; `ydotool` + `wl-clipboard` + *Activate Window By Title* GNOME extension; **Alt+Z** via GNOME custom shortcut). Orchestrator: `Linux/copyurl.sh`. On this Wayland setup `ydotool key`/`mousemove` are unreliable, so the trigger is `ydotool type "]"` (content.js also fires on `]`/BracketRight while hovering) and the **paste is done in-browser**: content.js queues URL+`PASTE_SUFFIX` into `chrome.storage.local`, and a Gemini content script (`gemini.js`, matches `gemini.google.com`) inserts it into the composer via the DOM and clicks send. Copy success is detected by polling `wl-paste` (no clipboard sequence number on Wayland). Requires the `storage` permission. See `Linux/README.md`.
 
 ## Out of scope
 - Gemini paste/Enter rewrite (separate test_enter*.ahk experiments).

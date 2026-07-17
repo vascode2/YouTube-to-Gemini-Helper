@@ -40,7 +40,7 @@ Press **Alt+Z** while your mouse is over a YouTube thumbnail in Brave:
 1. Types the trigger character **`]`** into the Brave window via
    `ydotool type`. [../content.js](../content.js) then:
    - copies the hovered video URL to the clipboard, **and**
-   - queues a Gemini paste payload (`<PASTE_PREFIX><url>`) in the extension's
+   - queues a Gemini paste payload (`<url><PASTE_SUFFIX>`) in the extension's
      `chrome.storage.local`.
 2. Polls the clipboard until a `youtube.com` URL appears — this confirms the
    copy succeeded (and retries the trigger if it didn't).
@@ -49,7 +49,7 @@ Press **Alt+Z** while your mouse is over a YouTube thumbnail in Brave:
 4. Inside the browser, [../gemini.js](../gemini.js) sees the queued payload,
    inserts it into Gemini's composer **via the DOM**, and clicks send.
 
-The Korean prompt prefix and the paste/submit both live in the **extension**,
+The Korean prompt suffix and the paste/submit both live in the **extension**,
 not in the shell script. See [copyurl.sh](copyurl.sh) — the Linux analog of
 [../copy.ahk](../copy.ahk).
 
@@ -205,7 +205,7 @@ gsettings set $KEY binding '<Alt>z'
 
 ## Configuration
 
-The Korean prompt prefix now lives in the **extension** as `PASTE_PREFIX` at the
+The Korean prompt suffix now lives in the **extension** as `PASTE_SUFFIX` at the
 top of [../content.js](../content.js) — edit it there and reload the extension.
 
 The shell knobs below are environment variables read at the top of
@@ -257,5 +257,5 @@ the content-script notes are shared across all platforms.
 | Window focus | `WinActivate` | `app:activate()` | *Activate Window By Title* extension via D-Bus |
 | Gemini paste + submit | synthetic click + Ctrl+V | AppleScript Cmd+V | **in-browser DOM insert + click** ([../gemini.js](../gemini.js)) |
 | Browser coupling | any (OS-level paste) | any (OS-level paste) | **YouTube + Gemini must share the same browser + profile** (in-browser `chrome.storage` handoff) |
-| Korean prompt source | clipboard payload from AHK | clipboard payload from Lua | `PASTE_PREFIX` in [../content.js](../content.js) |
+| Korean prompt source | clipboard payload from AHK | clipboard payload from Lua | `PASTE_SUFFIX` in [../content.js](../content.js) |
 | Verbose logging | `kVerboseLog` | always on | `COPYURL_VERBOSE=1` |
