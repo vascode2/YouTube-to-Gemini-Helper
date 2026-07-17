@@ -157,6 +157,42 @@ local function focusGeminiComposer(gapp)
   return true, composer
 end
 
+-- Submit the composed prompt by pressing Gemini's "Send message" button via the
+-- accessibility API. This is dramatically more reliable than a synthetic Return:
+-- Gemini's Safari WebApp frequently ignores a global Return keystroke (observed
+-- 2026-07-17: send-key return ok=true but the composer kept its text and the
+-- message was never sent), whereas AXPress on the send button submits every
+-- time. Returns true if the button was found and pressed.
+local function pressGeminiSendButton(gapp)
+  if not gapp then return false end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return false end
+  local btn = nil
+  local seen = 0
+  local function walk(el, depth)
+    if not el or depth > 40 or btn or seen > 8000 then return end
+    seen = seen + 1
+    if el:attributeValue("AXRole") == "AXButton" then
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      local title = tostring(el:attributeValue("AXTitle") or "")
+      if desc == "Send message" or title == "Send message"
+        or desc:lower():find("send message") or title:lower():find("send message") then
+        if el:attributeValue("AXEnabled") ~= false then btn = el; return end
+      end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  if not btn then
+    logLine("send-button: not found via AX")
+    return false
+  end
+  local pressed = pcall(function() btn:performAction("AXPress") end)
+  logLine("send-button: AXPress ok=" .. tostring(pressed))
+  return pressed
+end
+
 -- Activate an app WITHOUT blocking the Hammerspoon runloop, then invoke cb(ok).
 -- This is critical: hs.timer.usleep (used by sleep()) busy-blocks the runloop,
 -- so a requested app activation never actually completes while we spin — the
@@ -191,7 +227,16 @@ end
 -- caller has already brought Gemini frontmost (activateAndWait) and focused the
 -- composer (focusGeminiComposer). Verifies the paste actually landed by reading
 -- the composer value back via the accessibility API, then presses Return.
-local function pasteAndSubmitToGemini(geminiApp)
+--
+-- expectedUrl is the STABLE copied video URL passed straight from runFlowInner
+-- (NOT re-read from the clipboard). Earlier this compared the composer against a
+-- fresh hs.pasteboard.getContents() snapshot, but that snapshot could disagree
+-- with what actually got pasted when runs overlapped: a prior run's async
+-- "restore clipboard to URL-only" (see runFlowInner) or a rapid second Option+Z
+-- can mutate the clipboard between the snapshot and Cmd+V, so the exact-substring
+-- check spuriously returned false and the Return was skipped even though the
+-- paste was correct (observed 2026-07-17: composerLen=71 but landed=false).
+local function pasteAndSubmitToGemini(geminiApp, expectedUrl)
   -- Final safety check so Cmd+V can never leak into another app.
   local frontNow = hs.application.frontmostApplication()
   logLine("frontmost before paste: " .. (frontNow and frontNow:name() or "?"))
@@ -200,34 +245,80 @@ local function pasteAndSubmitToGemini(geminiApp)
     return false
   end
 
-  local expected = hs.pasteboard.getContents() or ""
   -- Select any existing composer text first so the paste REPLACES it (prevents
   -- accumulation if a previous run's text was never submitted).
   sendKey({ "cmd" }, "a", "cmd+a")
   sleep(0.05)
   sendKey({ "cmd" }, "v", "cmd+v")
-  sleep(0.25)
 
-  -- Verify the paste landed in the composer before submitting.
-  local composer = findGeminiComposer(geminiApp)
+  -- Verify the paste landed before submitting. Poll for up to ~1.6s: Gemini's
+  -- composer can be momentarily unavailable/empty right after Cmd+V (especially
+  -- while a previous response is still generating), reflecting the pasted text
+  -- only a beat later. A single 0.25s read would spuriously see an empty
+  -- composer and skip the submit, leaving the prompt sitting un-sent.
   local landed = false
-  if composer then
-    local val = tostring(composer:attributeValue("AXValue") or "")
-    -- The composer often reports a trailing newline; compare on a trimmed core.
-    local core = expected:gsub("%s+$", "")
-    landed = core ~= "" and val:find(core, 1, true) ~= nil
-    logLine("paste verify: landed=" .. tostring(landed) ..
-      " composerLen=" .. #val)
-  else
+  local composerEverFound = false
+  local lastLen = 0
+  for attempt = 1, 6 do
+    sleep(0.25)
+    local composer = findGeminiComposer(geminiApp)
+    if composer then
+      composerEverFound = true
+      local val = tostring(composer:attributeValue("AXValue") or "")
+      lastLen = #val
+      local trimmed = val:gsub("%s+$", "")
+      -- Primary check: the copied video URL is present (stable + distinctive).
+      -- Fallback: the composer clearly holds pasted text (Gemini renders pasted
+      -- URLs in ways that can hide the literal string from AXValue, so a non-empty
+      -- composer after a confirmed Cmd+A/Cmd+V means the paste worked).
+      local urlMatch = expectedUrl and expectedUrl ~= ""
+        and val:find(expectedUrl, 1, true) ~= nil
+      if urlMatch or #trimmed >= 10 then
+        landed = true
+        logLine(string.format("paste verify: landed=true composerLen=%d urlMatch=%s attempt=%d",
+          #val, tostring(urlMatch), attempt))
+        break
+      end
+    end
+  end
+  if not landed and not composerEverFound then
+    -- Never located a composer element: assume the paste went somewhere sane
+    -- and let the submit step try (it has its own frontmost guard).
     logLine("paste verify: composer not found; assuming landed")
     landed = true
   end
 
   if not landed then
-    logLine("paste did NOT land; not submitting")
+    logLine("paste did NOT land after polling (lastLen=" .. lastLen .. "); not submitting")
     return false
   end
 
+  -- Submit. Prefer the AX "Send message" button (reliable); fall back to a
+  -- global Return keystroke if the button can't be located. Gemini's send button
+  -- reports AXEnabled=true the instant the paste lands, but pressing it that
+  -- early is a no-op (its click handler isn't wired until the composer's input
+  -- state settles), so give it a moment and retry, confirming the composer
+  -- actually emptied after each press.
+  local function composerText()
+    local c = findGeminiComposer(geminiApp)
+    if not c then return "" end
+    return tostring(c:attributeValue("AXValue") or ""):gsub("%s+$", "")
+  end
+  local submitted = false
+  for attempt = 1, 3 do
+    sleep(0.35)
+    if not pressGeminiSendButton(geminiApp) then break end
+    sleep(0.4)
+    if #composerText() < 5 then
+      logLine("submit confirmed empty composer on attempt " .. attempt)
+      submitted = true
+      break
+    end
+    logLine("submit attempt " .. attempt .. ": composer still non-empty, retrying")
+  end
+  if submitted then return true end
+
+  logLine("send-button did not clear composer; falling back to Return keystroke")
   sendKey({}, "return", "return")
   return true
 end
@@ -382,7 +473,7 @@ local function runFlowInner()
       focusGeminiComposer(geminiApp)
       hs.timer.doAfter(0.2, function()
         local ok2, err2 = pcall(function()
-          local pasteOk = pasteAndSubmitToGemini(geminiApp)
+          local pasteOk = pasteAndSubmitToGemini(geminiApp, copiedUrl)
           if not pasteOk then
             notify("Gemini paste failed (see CopyURL.log)")
             return
@@ -405,7 +496,19 @@ local function runFlowInner()
   end)
 end
 
+local lastFlowAt = 0
 local function runFlow()
+  -- Debounce: a single Option+Z kicks off ~1-2s of async work (activate Gemini,
+  -- focus composer, paste, submit) during which the clipboard is mutated. A
+  -- second press landing inside that window would race on the clipboard and
+  -- could corrupt the payload the first run is about to paste, so ignore
+  -- presses that arrive within 2s of the previous one.
+  local now = hs.timer.secondsSinceEpoch()
+  if now - lastFlowAt < 2.0 then
+    logLine(string.format("Option+Z ignored (debounce): %.2fs since last", now - lastFlowAt))
+    return
+  end
+  lastFlowAt = now
   print("[CopyURL] Option+Z fired at " .. os.date("%H:%M:%S"))
   notify("Option+Z fired")
   local ok, err = pcall(runFlowInner)
@@ -437,7 +540,7 @@ local function runPasteOnlyTest()
     end
     focusGeminiComposer(app)
     hs.timer.doAfter(0.2, function()
-      if pasteAndSubmitToGemini(app) then
+      if pasteAndSubmitToGemini(app, fakeUrl) then
         hs.timer.doAfter(0.3, function() hs.pasteboard.setContents(fakeUrl) end)
         notify("paste-test sent")
       else
