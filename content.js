@@ -264,10 +264,21 @@
   );
 
   // F24 trigger: sent by copy.ahk (SendInput "{F24}") on Windows.
-  // Option+X trigger: sent by Hammerspoon on macOS (hs.eventtap.keyStroke({"alt"}, "x")).
-  // e.code === "KeyX" + e.altKey is used instead of e.key because Option+X on a US
-  // keyboard produces the Unicode character "≈" rather than the letter "x".
-  // "]" (BracketRight) trigger: sent by Linux/copyurl.sh via `ydotool type "]"`.
+  // F19 trigger: kept for potential future use, but NOT currently sent by
+  // Hammerspoon (see below) — no harm in leaving the check in place.
+  // "]" (BracketRight) trigger: sent by Linux/copyurl.sh via `ydotool type "]"`,
+  // AND (as of 2026-07) by Hammerspoon on macOS via hs.eventtap.keyStroke({}, "]").
+  // macOS previously used Option+X (e.code === "KeyX" && e.altKey), but as of
+  // 2026-07 that combo stopped reaching this listener at all on Brave/macOS
+  // (reproducibly confirmed: a real hover + synthetic Option+X never fired
+  // trigger_keydown, while an unmodified key like "]" fired every time) —
+  // most likely a Chromium change in how Option+letter composed-character key
+  // events are dispatched. F19 was tried next (no printable character, no
+  // OS/Karabiner binding on this keyboard) but synthetic F13-F20 keydowns sent
+  // via Hammerspoon never reached this listener either (no beacon, no clipboard
+  // change) — macOS appears to consume them as system-defined/media-key events
+  // before Chromium ever sees a normal keydown. "]" is what actually works
+  // reliably on both platforms, so Hammerspoon now sends it too.
   // On GNOME Wayland, `ydotool key <code>` mangles keycodes (broken virtual-device
   // keymap), but `ydotool type` reliably emits a character. "]" has no YouTube
   // shortcut, and we only act on it while a thumbnail is hovered (so normal "]"
@@ -275,15 +286,18 @@
   // !altKey here: the GNOME hotkey is Alt+Z, so the user is often still holding
   // Alt when copyurl.sh types "]" microseconds later — requiring !altKey made the
   // first press fail (it only worked once Alt was released). Ctrl/Meta are still
-  // excluded so it won't collide with browser/OS chords.
+  // excluded so it won't collide with browser/OS chords. On macOS, Gemini runs
+  // as a separate Safari Web App (see Hammerspoon's geminiBundleId), which never
+  // loads this extension, so isBracketKey's queueGeminiPaste() call (Linux-only,
+  // writes to chrome.storage.local for gemini.js) is an inert no-op there.
   document.addEventListener(
     "keydown",
     (e) => {
       const isF24 = (e.key === "F24" || e.code === "F24") && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
-      const isOptionX = e.code === "KeyX" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+      const isF19 = (e.key === "F19" || e.code === "F19") && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
       // Linux "]" trigger: match by key only here, decide whether to act below.
       const isBracketKey = e.code === "BracketRight" && !e.ctrlKey && !e.metaKey;
-      if (isF24 || isOptionX || isBracketKey) {
+      if (isF24 || isF19 || isBracketKey) {
         // Always re-derive the hovered video from the live cursor position at
         // trigger time. YouTube's hover overlay can leave a STALE hoveredVideoUrl
         // (a stray "mouseout" that didn't clear, or a detached element after the

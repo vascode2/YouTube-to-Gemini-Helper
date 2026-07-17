@@ -282,8 +282,25 @@ local function runFlowInner()
   local changeBefore = hs.pasteboard.changeCount()
   local clipBefore = hs.pasteboard.getContents() or ""
 
-  -- Triggers content.js in-page copy action (Option+X).
-  hs.eventtap.keyStroke({ "alt" }, "x", 0)
+  -- Triggers content.js in-page copy action. Previously Option+X, but as of
+  -- 2026-07 Brave/macOS stopped delivering that combo to the page at all
+  -- (confirmed via direct repro: real hover + synthetic Option+X never reached
+  -- content.js's keydown listener, while an unmodified key like "]" always
+  -- did). Tried F19 next (no printable char, no OS/Karabiner binding on this
+  -- keyboard) but hs.eventtap.keyStroke({}, "f19") never reached content.js
+  -- either (no clipboard change, no title beacon) — macOS appears to consume
+  -- synthetic F13-F20 as system-defined/media-key events before they become a
+  -- normal DOM keydown in Chromium, at least via Hammerspoon's synthesis path.
+  -- "]" (BracketRight, no modifiers) is what actually reaches content.js
+  -- reliably, so that's what we send. content.js's isBracketKey branch also
+  -- calls queueGeminiPaste(), but that's a Linux-only mechanism (writes to
+  -- chrome.storage.local for gemini.js on gemini.google.com); Gemini on this
+  -- Mac runs as a separate Safari Web App (see geminiBundleId above), which
+  -- never loads the Brave extension, so that write is an inert no-op here.
+  -- Explicitly targeted at ytApp (4th arg) rather than the global/unfocused
+  -- keyStroke() form, which was observed to occasionally not reach Brave at
+  -- all in isolated testing even when frontmost.
+  hs.eventtap.keyStroke({}, "]", 0, ytApp)
 
   -- Wait up to 2 s for the clipboard to actually change. Capture the content.js
   -- title beacon ("[CU:STATE]") DURING this loop: its TTL is short (~700 ms), so
