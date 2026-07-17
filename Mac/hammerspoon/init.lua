@@ -193,6 +193,60 @@ local function pressGeminiSendButton(gapp)
   return pressed
 end
 
+-- Return whether Gemini's "Send message" button currently exists and is enabled.
+-- This helps detect "chip-only" pastes where AXValue remains near-empty (e.g.
+-- just "\n") but the UI has accepted a payload and enabled send.
+local function isGeminiSendEnabled(gapp)
+  if not gapp then return nil end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return nil end
+  local enabled = nil
+  local seen = 0
+  local function walk(el, depth)
+    if not el or depth > 40 or enabled ~= nil or seen > 8000 then return end
+    seen = seen + 1
+    if el:attributeValue("AXRole") == "AXButton" then
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      local title = tostring(el:attributeValue("AXTitle") or "")
+      if desc == "Send message" or title == "Send message"
+        or desc:lower():find("send message") or title:lower():find("send message") then
+        enabled = (el:attributeValue("AXEnabled") ~= false)
+        return
+      end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  return enabled
+end
+
+local function isGeminiGenerating(gapp)
+  if not gapp then return nil end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return nil end
+  local generating = false
+  local seen = 0
+  local function walk(el, depth)
+    if not el or depth > 40 or generating or seen > 8000 then return end
+    seen = seen + 1
+    if el:attributeValue("AXRole") == "AXButton" then
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      local title = tostring(el:attributeValue("AXTitle") or "")
+      local lower = (desc .. " " .. title):lower()
+      if lower:find("stop generating") or lower:find("stop response")
+        or lower:find("stop") and lower:find("generat") then
+        generating = true
+        return
+      end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  return generating
+end
+
 -- Activate an app WITHOUT blocking the Hammerspoon runloop, then invoke cb(ok).
 -- This is critical: hs.timer.usleep (used by sleep()) busy-blocks the runloop,
 -- so a requested app activation never actually completes while we spin — the
@@ -247,9 +301,36 @@ local function pasteAndSubmitToGemini(geminiApp, expectedUrl)
 
   -- Select any existing composer text first so the paste REPLACES it (prevents
   -- accumulation if a previous run's text was never submitted).
-  sendKey({ "cmd" }, "a", "cmd+a")
-  sleep(0.05)
-  sendKey({ "cmd" }, "v", "cmd+v")
+  local waitedForIdle = 0
+  for _ = 1, 20 do
+    if isGeminiGenerating(geminiApp) then
+      sleep(0.25)
+      waitedForIdle = waitedForIdle + 250
+    else
+      break
+    end
+  end
+  if waitedForIdle > 0 then
+    logLine("paste preflight: waited for Gemini idle ms=" .. waitedForIdle)
+  end
+
+  local usedAxSet = false
+  local composerForSet = findGeminiComposer(geminiApp)
+  if composerForSet and expectedUrl and expectedUrl ~= "" then
+    local payload = expectedUrl .. pasteSuffix
+    local okSet = pcall(function() composerForSet:setAttributeValue("AXValue", payload) end)
+    if okSet then
+      usedAxSet = true
+      logLine("paste: AXValue set ok len=" .. #payload)
+    else
+      logLine("paste: AXValue set failed; falling back to Cmd+V")
+    end
+  end
+  if not usedAxSet then
+    sendKey({ "cmd" }, "a", "cmd+a")
+    sleep(0.05)
+    sendKey({ "cmd" }, "v", "cmd+v")
+  end
 
   -- Verify the paste landed before submitting. Poll for up to ~1.6s: Gemini's
   -- composer can be momentarily unavailable/empty right after Cmd+V (especially
@@ -259,9 +340,13 @@ local function pasteAndSubmitToGemini(geminiApp, expectedUrl)
   local landed = false
   local composerEverFound = false
   local lastLen = 0
+  local lastSendEnabled = nil
+  local preSendEnabled = isGeminiSendEnabled(geminiApp)
   for attempt = 1, 6 do
     sleep(0.25)
     local composer = findGeminiComposer(geminiApp)
+    local sendEnabled = isGeminiSendEnabled(geminiApp)
+    lastSendEnabled = sendEnabled
     if composer then
       composerEverFound = true
       local val = tostring(composer:attributeValue("AXValue") or "")
@@ -273,10 +358,15 @@ local function pasteAndSubmitToGemini(geminiApp, expectedUrl)
       -- composer after a confirmed Cmd+A/Cmd+V means the paste worked).
       local urlMatch = expectedUrl and expectedUrl ~= ""
         and val:find(expectedUrl, 1, true) ~= nil
-      if urlMatch or #trimmed >= 10 then
+      local sendTransitioned = (sendEnabled == true and preSendEnabled ~= true)
+      if urlMatch or #trimmed >= 10 or sendTransitioned then
         landed = true
-        logLine(string.format("paste verify: landed=true composerLen=%d urlMatch=%s attempt=%d",
-          #val, tostring(urlMatch), attempt))
+        logLine(string.format(
+          "paste verify: landed=true composerLen=%d urlMatch=%s sendEnabled=%s preSend=%s attempt=%d",
+          #val, tostring(urlMatch), tostring(sendEnabled), tostring(preSendEnabled), attempt))
+        if sendTransitioned and #trimmed < 10 and not urlMatch then
+          logLine("paste verify: treating send-button enable transition as landed (chip-only paste)")
+        end
         break
       end
     end
@@ -289,7 +379,9 @@ local function pasteAndSubmitToGemini(geminiApp, expectedUrl)
   end
 
   if not landed then
-    logLine("paste did NOT land after polling (lastLen=" .. lastLen .. "); not submitting")
+    logLine("paste did NOT land after polling (lastLen=" .. lastLen
+      .. ", preSend=" .. tostring(preSendEnabled)
+      .. ", lastSend=" .. tostring(lastSendEnabled) .. "); not submitting")
     return false
   end
 
