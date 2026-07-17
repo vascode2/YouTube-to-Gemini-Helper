@@ -46,8 +46,8 @@ kGeminiNewChatEachTime := false
 kGeminiNewChatBtnX := 30
 kGeminiNewChatBtnY := 102
 
-; Text before the URL in Gemini (Alt+Z). "" = URL only. Clipboard is restored to the plain URL after send.
-kGeminiPastePrefix := "한국말로 요약해줘 - "
+; Text appended AFTER the URL in Gemini (Alt+Z). "" = URL only. Clipboard is restored to the plain URL after send.
+kGeminiPasteSuffix := " 한국어로 요약해 줘"
 
 ; Set true to append diagnostic lines to copyurl_log.txt next to this script.
 kDebugLog := true
@@ -994,8 +994,8 @@ $!z:: {
         return
     }
     DebugLog("Got URL: " . clipUrl)
-    if (kGeminiPastePrefix != "")
-        A_Clipboard := kGeminiPastePrefix . clipUrl
+    if (kGeminiPasteSuffix != "")
+        A_Clipboard := clipUrl . kGeminiPasteSuffix
     VerboseLog("stage:find_gemini")
     gemHwnd := FindGeminiWindow()
     if !gemHwnd {
@@ -1069,8 +1069,8 @@ $!z:: {
     SendInput("^a")
     Sleep(40)
     ; Re-assert clipboard right before paste in case anything raced it.
-    if (kGeminiPastePrefix != "")
-        A_Clipboard := kGeminiPastePrefix . clipUrl
+    if (kGeminiPasteSuffix != "")
+        A_Clipboard := clipUrl . kGeminiPasteSuffix
     else
         A_Clipboard := clipUrl
     Sleep(25)
