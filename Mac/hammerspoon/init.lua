@@ -7,19 +7,28 @@
 -- 4) Paste "summarize this video: <url>" and press Enter
 -- 5) Restore clipboard to plain URL
 
-local CONFIG_VERSION = "v22 2026-07-13 beacon-diagnostics"
+local CONFIG_VERSION = "v23 2026-07-27 native Gemini.app instead of Safari-WebApp PWA"
 
 local hotkey = {"alt"}
 local key = "z"
 
 local youtubeApps = { "Brave Browser", "Google Chrome" }
 local geminiTitleNeedle = "gemini"
--- Bundle ID of the installed Gemini Safari Web App (PWA). When set, the Gemini
--- window lookup prefers any window from this app over title-substring matching.
+-- Bundle ID of the Gemini target app. When set, the Gemini window lookup
+-- prefers any window from this app over title-substring matching.
 -- Title-substring matching alone is unsafe: a YouTube video whose title contains
 -- "Gemini" (e.g. tutorials) lives in a Brave window and would otherwise be
 -- selected as the "Gemini" target — causing the paste to land in Brave.
-local geminiBundleId = "com.apple.Safari.WebApp.0D968D29-0354-49AB-9CD2-1B1FA685FFBB"
+--
+-- 2026-07-27: switched from the Safari Web App (PWA) install to the official
+-- native Gemini macOS app (com.google.GeminiMacOS, installed from
+-- https://gemini.google/mac/). The native app embeds its chat UI in a WKWebView
+-- (confirmed via AX-tree dump: `CanvasWKWebView` in the binary), so the same
+-- accessibility-driven composer/send-button approach still applies — only the
+-- AX labels differ (see pressGeminiSendButton/isGeminiSendEnabled below). The
+-- old PWA bundle ID is kept below, commented, for quick rollback.
+local geminiBundleId = "com.google.GeminiMacOS"
+-- local geminiBundleId = "com.apple.Safari.WebApp.0D968D29-0354-49AB-9CD2-1B1FA685FFBB" -- old PWA
 local pasteSuffix = " 한국어로 요약해 줘"
 
 -- Seconds to keep the YouTube window frontmost after a successful copy, before
@@ -143,9 +152,9 @@ end
 
 -- Focus Gemini's composer via the accessibility API. This is far more reliable
 -- than a coordinate-based click (no cursor movement, independent of window
--- size/position). The Safari WebApp does NOT auto-focus the composer on
--- activation, so without this the paste has nowhere to land. Returns true if a
--- composer was found and focus was requested.
+-- size/position). Neither the old PWA nor the native app reliably auto-focus
+-- the composer on activation, so without this the paste has nowhere to land.
+-- Returns true if a composer was found and focus was requested.
 local function focusGeminiComposer(gapp)
   local composer = findGeminiComposer(gapp)
   if not composer then
@@ -157,12 +166,16 @@ local function focusGeminiComposer(gapp)
   return true, composer
 end
 
--- Submit the composed prompt by pressing Gemini's "Send message" button via the
--- accessibility API. This is dramatically more reliable than a synthetic Return:
--- Gemini's Safari WebApp frequently ignores a global Return keystroke (observed
--- 2026-07-17: send-key return ok=true but the composer kept its text and the
--- message was never sent), whereas AXPress on the send button submits every
--- time. Returns true if the button was found and pressed.
+-- Submit the composed prompt by pressing Gemini's send button via the
+-- accessibility API. This is dramatically more reliable than a synthetic
+-- Return: Gemini's Safari WebApp (PWA) frequently ignored a global Return
+-- keystroke (observed 2026-07-17: send-key return ok=true but the composer
+-- kept its text and the message was never sent), whereas AXPress on the send
+-- button submits every time. The native Gemini.app (switched to 2026-07-27)
+-- exposes the button as AXIdentifier="send_button" / AXDescription="Submit"
+-- (confirmed via live AX-tree dump), rather than the PWA's "Send message"
+-- description — matched here so either target works. Returns true if the
+-- button was found and pressed.
 local function pressGeminiSendButton(gapp)
   if not gapp then return false end
   local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
@@ -175,7 +188,9 @@ local function pressGeminiSendButton(gapp)
     if el:attributeValue("AXRole") == "AXButton" then
       local desc = tostring(el:attributeValue("AXDescription") or "")
       local title = tostring(el:attributeValue("AXTitle") or "")
-      if desc == "Send message" or title == "Send message"
+      local identifier = tostring(el:attributeValue("AXIdentifier") or "")
+      if identifier == "send_button" or desc == "Submit" or title == "Submit"
+        or desc == "Send message" or title == "Send message"
         or desc:lower():find("send message") or title:lower():find("send message") then
         if el:attributeValue("AXEnabled") ~= false then btn = el; return end
       end
@@ -193,9 +208,10 @@ local function pressGeminiSendButton(gapp)
   return pressed
 end
 
--- Return whether Gemini's "Send message" button currently exists and is enabled.
--- This helps detect "chip-only" pastes where AXValue remains near-empty (e.g.
--- just "\n") but the UI has accepted a payload and enabled send.
+-- Return whether Gemini's send button currently exists and is enabled. This
+-- helps detect "chip-only" pastes where AXValue remains near-empty (e.g. just
+-- "\n") but the UI has accepted a payload and enabled send. Matches both the
+-- native app's id="send_button"/desc="Submit" and the old PWA's "Send message".
 local function isGeminiSendEnabled(gapp)
   if not gapp then return nil end
   local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
@@ -208,7 +224,9 @@ local function isGeminiSendEnabled(gapp)
     if el:attributeValue("AXRole") == "AXButton" then
       local desc = tostring(el:attributeValue("AXDescription") or "")
       local title = tostring(el:attributeValue("AXTitle") or "")
-      if desc == "Send message" or title == "Send message"
+      local identifier = tostring(el:attributeValue("AXIdentifier") or "")
+      if identifier == "send_button" or desc == "Submit" or title == "Submit"
+        or desc == "Send message" or title == "Send message"
         or desc:lower():find("send message") or title:lower():find("send message") then
         enabled = (el:attributeValue("AXEnabled") ~= false)
         return
@@ -221,6 +239,10 @@ local function isGeminiSendEnabled(gapp)
   return enabled
 end
 
+-- Detect whether Gemini is still generating a response (its "stop" button is
+-- present). The native app exposes this as id="stop_button"/desc="Stop
+-- response" (confirmed via live AX-tree dump), matching the same text pattern
+-- the old PWA used, so no separate branch is needed beyond the id check.
 local function isGeminiGenerating(gapp)
   if not gapp then return nil end
   local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
@@ -231,10 +253,11 @@ local function isGeminiGenerating(gapp)
     if not el or depth > 40 or generating or seen > 8000 then return end
     seen = seen + 1
     if el:attributeValue("AXRole") == "AXButton" then
+      local identifier = tostring(el:attributeValue("AXIdentifier") or "")
       local desc = tostring(el:attributeValue("AXDescription") or "")
       local title = tostring(el:attributeValue("AXTitle") or "")
       local lower = (desc .. " " .. title):lower()
-      if lower:find("stop generating") or lower:find("stop response")
+      if identifier == "stop_button" or lower:find("stop generating") or lower:find("stop response")
         or lower:find("stop") and lower:find("generat") then
         generating = true
         return
@@ -269,7 +292,7 @@ local function sendKey(mods, key, label)
   -- Global keystroke (no app arg). We only call this once Gemini is confirmed
   -- frontmost AND its composer is AX-focused, so the event lands in the prompt.
   -- Testing showed app-targeted keyStroke reports ok but does not reach the
-  -- Safari WebApp's web content, whereas a global keyStroke does.
+  -- Gemini app's embedded web content, whereas a global keyStroke does.
   local ok, err = pcall(function()
     hs.eventtap.keyStroke(mods, key, 0)
   end)
@@ -478,8 +501,9 @@ local function runFlowInner()
   -- reliably, so that's what we send. content.js's isBracketKey branch also
   -- calls queueGeminiPaste(), but that's a Linux-only mechanism (writes to
   -- chrome.storage.local for gemini.js on gemini.google.com); Gemini on this
-  -- Mac runs as a separate Safari Web App (see geminiBundleId above), which
-  -- never loads the Brave extension, so that write is an inert no-op here.
+  -- Mac runs as a separate app (native Gemini.app as of 2026-07-27, formerly a
+  -- Safari Web App — see geminiBundleId above), which never loads the Brave
+  -- extension, so that write is an inert no-op here.
   -- Explicitly targeted at ytApp (4th arg) rather than the global/unfocused
   -- keyStroke() form, which was observed to occasionally not reach Brave at
   -- all in isolated testing even when frontmost.
