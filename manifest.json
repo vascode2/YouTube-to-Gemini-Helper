@@ -1,13 +1,18 @@
 {
   "manifest_version": 3,
   "name": "CopyURL - YouTube Thumbnail URL Copier",
-  "version": "1.1.0",
-  "description": "Hover a YouTube thumbnail; on Windows, AutoHotkey Alt+Z copies the URL and sends it to the Gemini app.",
-  "permissions": ["clipboardWrite"],
+  "version": "1.2.8",
+  "description": "Hover a YouTube thumbnail; a global hotkey copies the URL and sends it to the Gemini app (Windows/macOS/Linux).",
+  "permissions": ["clipboardWrite", "storage"],
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://gemini.google.com/*"],
+      "js": ["gemini.js"],
       "run_at": "document_idle"
     }
   ],

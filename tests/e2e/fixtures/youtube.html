@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>YouTube fixture</title>
+  <style>
+    body { margin: 0; font-family: Roboto, Arial, sans-serif; background: #0f0f0f; }
+    .grid { display: flex; gap: 24px; padding: 40px; }
+    ytd-rich-item-renderer {
+      display: block; width: 320px; background: #181818; border-radius: 12px;
+      overflow: hidden;
+    }
+    a#thumbnail {
+      display: block; height: 180px; background: #303030; position: relative;
+      text-decoration: none;
+    }
+    a#thumbnail .overlay {
+      position: absolute; inset: 0;
+    }
+    .title { color: #f1f1f1; padding: 10px 12px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <!--
+    Faithful-enough YouTube grid for content.js's findVideoAnchor():
+    each card is a <ytd-rich-item-renderer> containing an <a id="thumbnail"
+    href="/watch?v=..."> with a hover-overlay child (mirrors YouTube's preview
+    overlay that sits between the cursor and the anchor).
+  -->
+  <div class="grid">
+    <ytd-rich-item-renderer data-id="VIDEO_AAAAAAA">
+      <a id="thumbnail" href="/watch?v=VIDEO_AAAAAAA">
+        <div class="overlay" data-testid="overlay-a"></div>
+      </a>
+      <div class="title">First video — AAAAAAA</div>
+    </ytd-rich-item-renderer>
+
+    <ytd-rich-item-renderer data-id="VIDEO_BBBBBBB">
+      <a id="thumbnail" href="/watch?v=VIDEO_BBBBBBB">
+        <div class="overlay" data-testid="overlay-b"></div>
+      </a>
+      <div class="title">Second video — BBBBBBB</div>
+    </ytd-rich-item-renderer>
+  </div>
+</body>
+</html>

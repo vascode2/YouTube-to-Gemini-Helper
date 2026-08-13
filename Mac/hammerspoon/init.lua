@@ -7,14 +7,34 @@
 -- 4) Paste "summarize this video: <url>" and press Enter
 -- 5) Restore clipboard to plain URL
 
-local CONFIG_VERSION = "v8 2026-05-23 hover-refresh-api-fix"
+local CONFIG_VERSION = "v23 2026-07-27 native Gemini.app instead of Safari-WebApp PWA"
 
 local hotkey = {"alt"}
 local key = "z"
 
 local youtubeApps = { "Brave Browser", "Google Chrome" }
 local geminiTitleNeedle = "gemini"
-local pastePrefix = "한국어로 요약해줘 "
+-- Bundle ID of the Gemini target app. When set, the Gemini window lookup
+-- prefers any window from this app over title-substring matching.
+-- Title-substring matching alone is unsafe: a YouTube video whose title contains
+-- "Gemini" (e.g. tutorials) lives in a Brave window and would otherwise be
+-- selected as the "Gemini" target — causing the paste to land in Brave.
+--
+-- 2026-07-27: switched from the Safari Web App (PWA) install to the official
+-- native Gemini macOS app (com.google.GeminiMacOS, installed from
+-- https://gemini.google/mac/). The native app embeds its chat UI in a WKWebView
+-- (confirmed via AX-tree dump: `CanvasWKWebView` in the binary), so the same
+-- accessibility-driven composer/send-button approach still applies — only the
+-- AX labels differ (see pressGeminiSendButton/isGeminiSendEnabled below). The
+-- old PWA bundle ID is kept below, commented, for quick rollback.
+local geminiBundleId = "com.google.GeminiMacOS"
+-- local geminiBundleId = "com.apple.Safari.WebApp.0D968D29-0354-49AB-9CD2-1B1FA685FFBB" -- old PWA
+local pasteSuffix = " 한국어로 요약해 줘"
+
+-- Seconds to keep the YouTube window frontmost after a successful copy, before
+-- switching to Gemini, so the content.js "Copied!" bubble is actually visible.
+-- macOS analog of kToastDwellMs in copy.ahk. Set to 0 to skip the dwell.
+local toastDwell = 0.8
 
 local logPath = os.getenv("HOME") .. "/Library/Logs/CopyURL.log"
 
@@ -48,6 +68,36 @@ local function findWindowByTitleNeedle(needle)
   return nil
 end
 
+local function findGeminiWindow()
+  if geminiBundleId and geminiBundleId ~= "" then
+    local app = hs.application.applicationsForBundleID(geminiBundleId)[1]
+    if app then
+      local win = app:mainWindow() or app:focusedWindow()
+      if win then return win end
+      local wins = app:allWindows()
+      if wins[1] then return wins[1] end
+    end
+  end
+  -- Fallback: title-substring scan, but skip any window owned by the browsers
+  -- (a YouTube video whose title contains "Gemini" would otherwise match).
+  local needleLower = lower(geminiTitleNeedle)
+  for _, win in ipairs(hs.window.orderedWindows()) do
+    local app = win:application()
+    local appName = app and app:name() or ""
+    local isBrowser = false
+    for _, b in ipairs(youtubeApps) do
+      if appName == b then isBrowser = true; break end
+    end
+    if not isBrowser then
+      local title = lower(win:title())
+      if string.find(title, needleLower, 1, true) then
+        return win
+      end
+    end
+  end
+  return nil
+end
+
 local function findYoutubeWindow()
   for _, appName in ipairs(youtubeApps) do
     local app = hs.appfinder.appFromName(appName)
@@ -71,6 +121,321 @@ end
 
 local function sleep(seconds)
   hs.timer.usleep(math.floor(seconds * 1000000))
+end
+
+-- Find Gemini's prompt composer (a contenteditable exposed as AXTextArea) by
+-- walking the app's accessibility tree. Prefer the one whose description looks
+-- like the prompt field ("Enter a prompt for Gemini"); fall back to the first
+-- AXTextArea. Returns the axuielement or nil.
+local function findGeminiComposer(gapp)
+  if not gapp then return nil end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return nil end
+  local composer = nil
+  local function walk(el, depth)
+    if depth > 30 or composer then return end
+    local role = el:attributeValue("AXRole")
+    if role == "AXTextArea" then
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      if desc:lower():find("prompt") or desc:lower():find("gemini") then
+        composer = el
+        return
+      end
+      if not composer then composer = el end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  return composer
+end
+
+-- Focus Gemini's composer via the accessibility API. This is far more reliable
+-- than a coordinate-based click (no cursor movement, independent of window
+-- size/position). Neither the old PWA nor the native app reliably auto-focus
+-- the composer on activation, so without this the paste has nowhere to land.
+-- Returns true if a composer was found and focus was requested.
+local function focusGeminiComposer(gapp)
+  local composer = findGeminiComposer(gapp)
+  if not composer then
+    logLine("composer: not found via AX")
+    return false, nil
+  end
+  local ok = pcall(function() composer:setAttributeValue("AXFocused", true) end)
+  logLine("composer: AX-focus requested ok=" .. tostring(ok))
+  return true, composer
+end
+
+-- Submit the composed prompt by pressing Gemini's send button via the
+-- accessibility API. This is dramatically more reliable than a synthetic
+-- Return: Gemini's Safari WebApp (PWA) frequently ignored a global Return
+-- keystroke (observed 2026-07-17: send-key return ok=true but the composer
+-- kept its text and the message was never sent), whereas AXPress on the send
+-- button submits every time. The native Gemini.app (switched to 2026-07-27)
+-- exposes the button as AXIdentifier="send_button" / AXDescription="Submit"
+-- (confirmed via live AX-tree dump), rather than the PWA's "Send message"
+-- description — matched here so either target works. Returns true if the
+-- button was found and pressed.
+local function pressGeminiSendButton(gapp)
+  if not gapp then return false end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return false end
+  local btn = nil
+  local seen = 0
+  local function walk(el, depth)
+    if not el or depth > 40 or btn or seen > 8000 then return end
+    seen = seen + 1
+    if el:attributeValue("AXRole") == "AXButton" then
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      local title = tostring(el:attributeValue("AXTitle") or "")
+      local identifier = tostring(el:attributeValue("AXIdentifier") or "")
+      if identifier == "send_button" or desc == "Submit" or title == "Submit"
+        or desc == "Send message" or title == "Send message"
+        or desc:lower():find("send message") or title:lower():find("send message") then
+        if el:attributeValue("AXEnabled") ~= false then btn = el; return end
+      end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  if not btn then
+    logLine("send-button: not found via AX")
+    return false
+  end
+  local pressed = pcall(function() btn:performAction("AXPress") end)
+  logLine("send-button: AXPress ok=" .. tostring(pressed))
+  return pressed
+end
+
+-- Return whether Gemini's send button currently exists and is enabled. This
+-- helps detect "chip-only" pastes where AXValue remains near-empty (e.g. just
+-- "\n") but the UI has accepted a payload and enabled send. Matches both the
+-- native app's id="send_button"/desc="Submit" and the old PWA's "Send message".
+local function isGeminiSendEnabled(gapp)
+  if not gapp then return nil end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return nil end
+  local enabled = nil
+  local seen = 0
+  local function walk(el, depth)
+    if not el or depth > 40 or enabled ~= nil or seen > 8000 then return end
+    seen = seen + 1
+    if el:attributeValue("AXRole") == "AXButton" then
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      local title = tostring(el:attributeValue("AXTitle") or "")
+      local identifier = tostring(el:attributeValue("AXIdentifier") or "")
+      if identifier == "send_button" or desc == "Submit" or title == "Submit"
+        or desc == "Send message" or title == "Send message"
+        or desc:lower():find("send message") or title:lower():find("send message") then
+        enabled = (el:attributeValue("AXEnabled") ~= false)
+        return
+      end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  return enabled
+end
+
+-- Detect whether Gemini is still generating a response (its "stop" button is
+-- present). The native app exposes this as id="stop_button"/desc="Stop
+-- response" (confirmed via live AX-tree dump), matching the same text pattern
+-- the old PWA used, so no separate branch is needed beyond the id check.
+local function isGeminiGenerating(gapp)
+  if not gapp then return nil end
+  local ok, axapp = pcall(function() return hs.axuielement.applicationElement(gapp) end)
+  if not ok or not axapp then return nil end
+  local generating = false
+  local seen = 0
+  local function walk(el, depth)
+    if not el or depth > 40 or generating or seen > 8000 then return end
+    seen = seen + 1
+    if el:attributeValue("AXRole") == "AXButton" then
+      local identifier = tostring(el:attributeValue("AXIdentifier") or "")
+      local desc = tostring(el:attributeValue("AXDescription") or "")
+      local title = tostring(el:attributeValue("AXTitle") or "")
+      local lower = (desc .. " " .. title):lower()
+      if identifier == "stop_button" or lower:find("stop generating") or lower:find("stop response")
+        or lower:find("stop") and lower:find("generat") then
+        generating = true
+        return
+      end
+    end
+    local kids = el:attributeValue("AXChildren")
+    if kids then for _, k in ipairs(kids) do walk(k, depth + 1) end end
+  end
+  walk(axapp, 0)
+  return generating
+end
+
+-- Activate an app WITHOUT blocking the Hammerspoon runloop, then invoke cb(ok).
+-- This is critical: hs.timer.usleep (used by sleep()) busy-blocks the runloop,
+-- so a requested app activation never actually completes while we spin — the
+-- frontmost app stays stale and the flow wrongly concludes "not frontmost".
+-- Polling via hs.timer.doAfter lets the runloop turn so the switch really lands.
+local function activateAndWait(app, win, timeoutSec, cb)
+  if win then win:focus() end
+  app:activate(true)
+  local deadline = hs.timer.secondsSinceEpoch() + timeoutSec
+  local function poll()
+    local f = hs.application.frontmostApplication()
+    if f and f:pid() == app:pid() then cb(true); return end
+    if hs.timer.secondsSinceEpoch() >= deadline then cb(false); return end
+    hs.timer.doAfter(0.05, poll)
+  end
+  hs.timer.doAfter(0.05, poll)
+end
+
+local function sendKey(mods, key, label)
+  -- Global keystroke (no app arg). We only call this once Gemini is confirmed
+  -- frontmost AND its composer is AX-focused, so the event lands in the prompt.
+  -- Testing showed app-targeted keyStroke reports ok but does not reach the
+  -- Gemini app's embedded web content, whereas a global keyStroke does.
+  local ok, err = pcall(function()
+    hs.eventtap.keyStroke(mods, key, 0)
+  end)
+  logLine(string.format("send-key %s ok=%s err=%s", label, tostring(ok), tostring(err)))
+  return ok
+end
+
+-- Paste the clipboard payload into Gemini's composer and submit. Assumes the
+-- caller has already brought Gemini frontmost (activateAndWait) and focused the
+-- composer (focusGeminiComposer). Verifies the paste actually landed by reading
+-- the composer value back via the accessibility API, then presses Return.
+--
+-- expectedUrl is the STABLE copied video URL passed straight from runFlowInner
+-- (NOT re-read from the clipboard). Earlier this compared the composer against a
+-- fresh hs.pasteboard.getContents() snapshot, but that snapshot could disagree
+-- with what actually got pasted when runs overlapped: a prior run's async
+-- "restore clipboard to URL-only" (see runFlowInner) or a rapid second Option+Z
+-- can mutate the clipboard between the snapshot and Cmd+V, so the exact-substring
+-- check spuriously returned false and the Return was skipped even though the
+-- paste was correct (observed 2026-07-17: composerLen=71 but landed=false).
+local function pasteAndSubmitToGemini(geminiApp, expectedUrl)
+  -- Final safety check so Cmd+V can never leak into another app.
+  local frontNow = hs.application.frontmostApplication()
+  logLine("frontmost before paste: " .. (frontNow and frontNow:name() or "?"))
+  if not (frontNow and geminiApp and frontNow:pid() == geminiApp:pid()) then
+    logLine("paste ABORT: Gemini not frontmost; refusing to send keys")
+    return false
+  end
+
+  -- Select any existing composer text first so the paste REPLACES it (prevents
+  -- accumulation if a previous run's text was never submitted).
+  local waitedForIdle = 0
+  for _ = 1, 20 do
+    if isGeminiGenerating(geminiApp) then
+      sleep(0.25)
+      waitedForIdle = waitedForIdle + 250
+    else
+      break
+    end
+  end
+  if waitedForIdle > 0 then
+    logLine("paste preflight: waited for Gemini idle ms=" .. waitedForIdle)
+  end
+
+  local usedAxSet = false
+  local composerForSet = findGeminiComposer(geminiApp)
+  if composerForSet and expectedUrl and expectedUrl ~= "" then
+    local payload = expectedUrl .. pasteSuffix
+    local okSet = pcall(function() composerForSet:setAttributeValue("AXValue", payload) end)
+    if okSet then
+      usedAxSet = true
+      logLine("paste: AXValue set ok len=" .. #payload)
+    else
+      logLine("paste: AXValue set failed; falling back to Cmd+V")
+    end
+  end
+  if not usedAxSet then
+    sendKey({ "cmd" }, "a", "cmd+a")
+    sleep(0.05)
+    sendKey({ "cmd" }, "v", "cmd+v")
+  end
+
+  -- Verify the paste landed before submitting. Poll for up to ~1.6s: Gemini's
+  -- composer can be momentarily unavailable/empty right after Cmd+V (especially
+  -- while a previous response is still generating), reflecting the pasted text
+  -- only a beat later. A single 0.25s read would spuriously see an empty
+  -- composer and skip the submit, leaving the prompt sitting un-sent.
+  local landed = false
+  local composerEverFound = false
+  local lastLen = 0
+  local lastSendEnabled = nil
+  local preSendEnabled = isGeminiSendEnabled(geminiApp)
+  for attempt = 1, 6 do
+    sleep(0.25)
+    local composer = findGeminiComposer(geminiApp)
+    local sendEnabled = isGeminiSendEnabled(geminiApp)
+    lastSendEnabled = sendEnabled
+    if composer then
+      composerEverFound = true
+      local val = tostring(composer:attributeValue("AXValue") or "")
+      lastLen = #val
+      local trimmed = val:gsub("%s+$", "")
+      -- Primary check: the copied video URL is present (stable + distinctive).
+      -- Fallback: the composer clearly holds pasted text (Gemini renders pasted
+      -- URLs in ways that can hide the literal string from AXValue, so a non-empty
+      -- composer after a confirmed Cmd+A/Cmd+V means the paste worked).
+      local urlMatch = expectedUrl and expectedUrl ~= ""
+        and val:find(expectedUrl, 1, true) ~= nil
+      local sendTransitioned = (sendEnabled == true and preSendEnabled ~= true)
+      if urlMatch or #trimmed >= 10 or sendTransitioned then
+        landed = true
+        logLine(string.format(
+          "paste verify: landed=true composerLen=%d urlMatch=%s sendEnabled=%s preSend=%s attempt=%d",
+          #val, tostring(urlMatch), tostring(sendEnabled), tostring(preSendEnabled), attempt))
+        if sendTransitioned and #trimmed < 10 and not urlMatch then
+          logLine("paste verify: treating send-button enable transition as landed (chip-only paste)")
+        end
+        break
+      end
+    end
+  end
+  if not landed and not composerEverFound then
+    -- Never located a composer element: assume the paste went somewhere sane
+    -- and let the submit step try (it has its own frontmost guard).
+    logLine("paste verify: composer not found; assuming landed")
+    landed = true
+  end
+
+  if not landed then
+    logLine("paste did NOT land after polling (lastLen=" .. lastLen
+      .. ", preSend=" .. tostring(preSendEnabled)
+      .. ", lastSend=" .. tostring(lastSendEnabled) .. "); not submitting")
+    return false
+  end
+
+  -- Submit. Prefer the AX "Send message" button (reliable); fall back to a
+  -- global Return keystroke if the button can't be located. Gemini's send button
+  -- reports AXEnabled=true the instant the paste lands, but pressing it that
+  -- early is a no-op (its click handler isn't wired until the composer's input
+  -- state settles), so give it a moment and retry, confirming the composer
+  -- actually emptied after each press.
+  local function composerText()
+    local c = findGeminiComposer(geminiApp)
+    if not c then return "" end
+    return tostring(c:attributeValue("AXValue") or ""):gsub("%s+$", "")
+  end
+  local submitted = false
+  for attempt = 1, 3 do
+    sleep(0.35)
+    if not pressGeminiSendButton(geminiApp) then break end
+    sleep(0.4)
+    if #composerText() < 5 then
+      logLine("submit confirmed empty composer on attempt " .. attempt)
+      submitted = true
+      break
+    end
+    logLine("submit attempt " .. attempt .. ": composer still non-empty, retrying")
+  end
+  if submitted then return true end
+
+  logLine("send-button did not clear composer; falling back to Return keystroke")
+  sendKey({}, "return", "return")
+  return true
 end
 
 local function runFlowInner()
@@ -115,79 +480,151 @@ local function runFlowInner()
   sleep(0.05)
   logLine(string.format("hover-refresh at %.0f,%.0f to %s", mousePos.x, mousePos.y, ytApp:name()))
 
-  -- Remember what was on the clipboard before so we can detect a real change.
+  -- Remember pasteboard changeCount so we can detect ANY write, even if the new
+  -- value equals the previous one. (After a prior run we restore the clipboard
+  -- to the plain URL on line ~183; if the user copies the same hovered thumbnail
+  -- again, a string-equality check would never see a change and the flow would
+  -- spuriously report "URL copy failed".)
+  local changeBefore = hs.pasteboard.changeCount()
   local clipBefore = hs.pasteboard.getContents() or ""
 
-  -- Triggers content.js in-page copy action (Option+X).
-  hs.eventtap.keyStroke({ "alt" }, "x", 0)
+  -- Triggers content.js in-page copy action. Previously Option+X, but as of
+  -- 2026-07 Brave/macOS stopped delivering that combo to the page at all
+  -- (confirmed via direct repro: real hover + synthetic Option+X never reached
+  -- content.js's keydown listener, while an unmodified key like "]" always
+  -- did). Tried F19 next (no printable char, no OS/Karabiner binding on this
+  -- keyboard) but hs.eventtap.keyStroke({}, "f19") never reached content.js
+  -- either (no clipboard change, no title beacon) — macOS appears to consume
+  -- synthetic F13-F20 as system-defined/media-key events before they become a
+  -- normal DOM keydown in Chromium, at least via Hammerspoon's synthesis path.
+  -- "]" (BracketRight, no modifiers) is what actually reaches content.js
+  -- reliably, so that's what we send. content.js's isBracketKey branch also
+  -- calls queueGeminiPaste(), but that's a Linux-only mechanism (writes to
+  -- chrome.storage.local for gemini.js on gemini.google.com); Gemini on this
+  -- Mac runs as a separate app (native Gemini.app as of 2026-07-27, formerly a
+  -- Safari Web App — see geminiBundleId above), which never loads the Brave
+  -- extension, so that write is an inert no-op here.
+  -- Explicitly targeted at ytApp (4th arg) rather than the global/unfocused
+  -- keyStroke() form, which was observed to occasionally not reach Brave at
+  -- all in isolated testing even when frontmost.
+  hs.eventtap.keyStroke({}, "]", 0, ytApp)
 
-  -- Wait up to 2 s for the clipboard to actually change.
+  -- Wait up to 2 s for the clipboard to actually change. Capture the content.js
+  -- title beacon ("[CU:STATE]") DURING this loop: its TTL is short (~700 ms), so
+  -- reading it after the wait could miss it. STATE ∈
+  -- ok|null|execfail|asyncok|asyncfail. "no-beacon" means content.js never
+  -- handled the Option+X (extension not loaded / not on a youtube.com tab /
+  -- orphaned after an extension update -> reload the tab).
   local copiedUrl = ""
+  local beacon = "no-beacon"
   local deadline = hs.timer.secondsSinceEpoch() + 2
   while hs.timer.secondsSinceEpoch() < deadline do
-    sleep(0.08)
+    if beacon == "no-beacon" then
+      local m = (youtubeWin:title() or ""):match("%[CU:(%a+)%]")
+      if m then beacon = m end
+    end
+    sleep(0.05)
+    local changedNow = hs.pasteboard.changeCount() ~= changeBefore
     local cur = hs.pasteboard.getContents() or ""
-    if cur ~= clipBefore and cur:find("youtube%.com") then
+    if cur:find("youtube%.com") and (changedNow or cur ~= clipBefore) then
       copiedUrl = cur
       break
     end
+    -- Stop early once we know the copy can't succeed (hover was empty).
+    if beacon == "null" then break end
   end
+  logLine(string.format("copy-wait done: changed=%s len=%d beacon=%s",
+    tostring(hs.pasteboard.changeCount() ~= changeBefore),
+    #(hs.pasteboard.getContents() or ""), beacon))
 
   if copiedUrl == "" then
-    notify("URL copy failed. Hover a thumbnail, then try again.")
+    if beacon == "null" then
+      notify("No thumbnail under cursor. Hover a video, then try again.")
+    elseif beacon == "no-beacon" then
+      notify("Extension didn't respond. Reload the YouTube tab (Cmd+R).")
+    else
+      notify("URL copy failed (beacon=" .. beacon .. "). Try again.")
+    end
     return
   end
 
-  local geminiWin = findWindowByTitleNeedle(geminiTitleNeedle)
+  -- Keep YouTube frontmost briefly so the content.js "Copied!" bubble is seen
+  -- before Gemini steals focus. Skipped when toastDwell is 0.
+  if toastDwell > 0 then
+    logLine(string.format("toast dwell %.2fs", toastDwell))
+    sleep(toastDwell)
+  end
+
+  local geminiWin = findGeminiWindow()
   if not geminiWin then
     notify("Gemini window not found")
     return
   end
 
-  geminiWin:focus()
   local geminiApp = geminiWin:application()
-  geminiApp:activate(true)
-  -- Wait until Gemini's app actually becomes frontmost so keystrokes land here.
-  local fdl = hs.timer.secondsSinceEpoch() + 0.6
-  while hs.timer.secondsSinceEpoch() < fdl do
-    local f = hs.application.frontmostApplication()
-    if f and f:pid() == geminiApp:pid() then break end
-    sleep(0.03)
-  end
-  sleep(0.1)
-  local frontGem = hs.application.frontmostApplication()
-  logLine("frontmost before paste: " .. (frontGem and frontGem:name() or "?"))
+  local gemTitle = geminiWin:title() or "?"
+  logLine("gemini found: " .. geminiApp:name() .. " win=" .. gemTitle)
 
-  -- NO synthetic clicks, NO JS focus injection. Gemini (Safari WebApp) auto-
-  -- focuses its composer on window activation; the earlier Chrome AppleScript
-  -- `execute javascript` block was useless here because WebApps don't expose
-  -- Chrome's scripting dictionary, and it just added ~300ms per run.
-
-  -- Build payload and put it on clipboard.
-  local payload = pastePrefix .. copiedUrl
+  -- Build payload and put it on clipboard BEFORE touching Gemini's focus,
+  -- so the clipboard is ready the moment Cmd+V lands.
+  local payload = copiedUrl .. pasteSuffix
   hs.pasteboard.setContents(payload)
   logLine("pasting payload len=" .. #payload)
 
-  -- Paste + Enter. No Cmd+A.
-  local script = [[
-    tell application "System Events"
-      keystroke "v" using command down
-      delay 0.2
-      key code 36
-    end tell
-  ]]
-  hs.osascript.applescript(script)
-  sleep(0.1)
-
-  -- Restore clipboard to plain URL (same behavior as Windows flow).
-  hs.pasteboard.setContents(copiedUrl)
-  notify("Sent URL to Gemini")
-
-  -- Optional: restore original clipboard instead.
-  -- hs.pasteboard.setContents(originalClipboard)
+  -- Bring Gemini to the front, then paste — asynchronously. We must NOT
+  -- busy-wait here: hs.timer.usleep blocks the runloop and the activation would
+  -- never actually complete (front stays Brave). activateAndWait polls via
+  -- doAfter so the switch really lands, then runs the paste in its callback.
+  activateAndWait(geminiApp, geminiWin, 2.0, function(ok)
+    local okRun, err = pcall(function()
+      if not ok then
+        local f = hs.application.frontmostApplication()
+        logLine("gemini activate FAILED; front=" .. (f and f:name() or "?"))
+        notify("Gemini didn't come to front. Try again.")
+        return
+      end
+      -- Focus the composer via AX (the WebApp does NOT auto-focus it), give
+      -- the focus a beat to settle, then paste + submit inside another async
+      -- step so the runloop can process the focus change.
+      focusGeminiComposer(geminiApp)
+      hs.timer.doAfter(0.2, function()
+        local ok2, err2 = pcall(function()
+          local pasteOk = pasteAndSubmitToGemini(geminiApp, copiedUrl)
+          if not pasteOk then
+            notify("Gemini paste failed (see CopyURL.log)")
+            return
+          end
+          hs.timer.doAfter(0.3, function()
+            hs.pasteboard.setContents(copiedUrl)
+          end)
+          notify("Sent URL to Gemini")
+        end)
+        if not ok2 then
+          logLine("gemini-paste ERROR: " .. tostring(err2))
+          notify("Gemini step error - see log")
+        end
+      end)
+    end)
+    if not okRun then
+      logLine("gemini-callback ERROR: " .. tostring(err))
+      notify("Gemini step error - see log")
+    end
+  end)
 end
 
+local lastFlowAt = 0
 local function runFlow()
+  -- Debounce: a single Option+Z kicks off ~1-2s of async work (activate Gemini,
+  -- focus composer, paste, submit) during which the clipboard is mutated. A
+  -- second press landing inside that window would race on the clipboard and
+  -- could corrupt the payload the first run is about to paste, so ignore
+  -- presses that arrive within 2s of the previous one.
+  local now = hs.timer.secondsSinceEpoch()
+  if now - lastFlowAt < 2.0 then
+    logLine(string.format("Option+Z ignored (debounce): %.2fs since last", now - lastFlowAt))
+    return
+  end
+  lastFlowAt = now
   print("[CopyURL] Option+Z fired at " .. os.date("%H:%M:%S"))
   notify("Option+Z fired")
   local ok, err = pcall(runFlowInner)
@@ -203,37 +640,30 @@ local function runPasteOnlyTest()
   logLine("runPasteOnlyTest start")
   local fakeUrl = "https://www.youtube.com/watch?v=TESTID_" .. os.date("%H%M%S")
   hs.pasteboard.setContents(fakeUrl)
-  local geminiWin = findWindowByTitleNeedle(geminiTitleNeedle)
+  local geminiWin = findGeminiWindow()
   if not geminiWin then
     notify("Gemini window not found")
     return
   end
-  -- Reuse the second half of the main flow by setting the variable runFlowInner
-  -- expects. Simplest path: just inline the focus+paste here.
-  geminiWin:focus()
   local app = geminiWin:application()
-  app:activate(true)
-  local fdl = hs.timer.secondsSinceEpoch() + 0.6
-  while hs.timer.secondsSinceEpoch() < fdl do
-    local f = hs.application.frontmostApplication()
-    if f and f:pid() == app:pid() then break end
-    sleep(0.03)
-  end
-  sleep(0.1)
-  local frontPaste = hs.application.frontmostApplication()
-  logLine("paste-test frontmost=" .. (frontPaste and (frontPaste:name() .. " bundle=" .. (frontPaste:bundleID() or "?")) or "?")
-    .. " gemini-pid=" .. app:pid() .. " gemini-name=" .. (app:name() or "?"))
-  local payload = pastePrefix .. fakeUrl
+  local payload = fakeUrl .. pasteSuffix
   hs.pasteboard.setContents(payload)
   logLine("paste-test payload len=" .. #payload .. " url=" .. fakeUrl)
-  hs.osascript.applescript([[
-    tell application "System Events"
-      keystroke "v" using command down
-      delay 0.2
-      key code 36
-    end tell
-  ]])
-  notify("paste-test sent")
+  activateAndWait(app, geminiWin, 2.0, function(ok)
+    if not ok then
+      notify("paste-test: Gemini didn't come to front")
+      return
+    end
+    focusGeminiComposer(app)
+    hs.timer.doAfter(0.2, function()
+      if pasteAndSubmitToGemini(app, fakeUrl) then
+        hs.timer.doAfter(0.3, function() hs.pasteboard.setContents(fakeUrl) end)
+        notify("paste-test sent")
+      else
+        notify("paste-test failed (see CopyURL.log)")
+      end
+    end)
+  end)
 end
 
 hs.hotkey.bind(hotkey, key, runFlow)
@@ -255,3 +685,40 @@ hs.urlevent.bind("copyurl-reload", function() logLine("url-event: copyurl-reload
 
 logLine("config loaded; version=" .. CONFIG_VERSION .. "; Option+Z bound")
 notify("CopyURL " .. CONFIG_VERSION)
+
+-- =========================================================================
+-- Ctrl + mouse wheel = zoom  (Windows-style page zoom)
+-- -------------------------------------------------------------------------
+-- On this machine Karabiner swaps physical left_control -> left_command, so a
+-- physical Ctrl press reaches macOS/Hammerspoon as the Cmd flag. Browsers zoom
+-- the page with Cmd+= / Cmd+- (which the user already triggers via "Ctrl"+/-).
+-- Here we catch Cmd + scroll-wheel and translate each wheel notch into a zoom
+-- keystroke, consuming the scroll so the page does not also scroll.
+--   wheel up   -> Cmd+=  (zoom in)
+--   wheel down -> Cmd+-  (zoom out)
+-- If the direction feels reversed, swap "=" and "-" below.
+-- =========================================================================
+local function scrollZoomIsModifier(flags)
+  -- Only the Cmd flag (== physical Ctrl after the swap). Ignore other big
+  -- modifiers so we never hijack Cmd+Shift+scroll etc.
+  return flags.cmd and not flags.ctrl and not flags.alt and not flags.fn
+end
+
+zoomScrollTap = hs.eventtap.new({ hs.eventtap.event.types.scrollWheel }, function(e)
+  local flags = e:getFlags()
+  if not scrollZoomIsModifier(flags) then
+    return false
+  end
+  local dy = e:getProperty(hs.eventtap.event.properties.scrollWheelEventDeltaAxis1)
+  if dy == 0 then
+    return true
+  end
+  if dy > 0 then
+    hs.eventtap.keyStroke({ "cmd" }, "=", 0)   -- zoom in
+  else
+    hs.eventtap.keyStroke({ "cmd" }, "-", 0)   -- zoom out
+  end
+  return true  -- swallow the original scroll so the page doesn't scroll too
+end)
+zoomScrollTap:start()
+logLine("ctrl-scroll-zoom tap started (enabled=" .. tostring(zoomScrollTap:isEnabled()) .. ")")

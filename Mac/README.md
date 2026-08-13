@@ -11,7 +11,7 @@ Press **Option+Z** while your mouse is over a YouTube thumbnail in Brave/Chrome:
 3. Sends **Option+X** so `content.js` copies the hovered URL to the clipboard.
 4. Polls the clipboard until a `youtube.com` URL appears (up to 2 s).
 5. Activates the Gemini Safari WebApp / PWA (window title contains `Gemini`).
-6. Pastes `<pastePrefix><url>` via `Cmd+V` and presses Enter.
+6. Pastes `<url><pasteSuffix>` via `Cmd+V` and presses Enter.
 7. Restores the clipboard to the plain URL.
 
 ## Install
@@ -36,7 +36,7 @@ Variables at the top of [hammerspoon/init.lua](hammerspoon/init.lua):
 | `hotkey` / `key` | `{"alt"}`, `"z"` | Trigger chord (Option+Z). |
 | `youtubeApps` | `{"Brave Browser", "Google Chrome"}` | Browsers to search for a YouTube window, in priority order. |
 | `geminiTitleNeedle` | `"gemini"` | Substring matched against window titles to find Gemini. |
-| `pastePrefix` | `"한국어로 요약해줘 "` | Text prepended to the URL before Cmd+V. Set `""` to paste just the URL. |
+| `pasteSuffix` | `" 한국어로 요약해 줘"` | Text appended after the URL before Cmd+V. Set `""` to paste just the URL. |
 | `CONFIG_VERSION` | `"vN …"` | Stamp logged on load and shown in the ready toast — bumped on every script change so you can confirm the live build matches the file. |
 
 ## Live reload & logs
@@ -64,6 +64,9 @@ These can be triggered from any terminal without focusing Hammerspoon:
 | "URL copy failed" when the browser was not focused | `content.js` had stale `hoveredVideoUrl` because the page never saw a mousemove after coming to the front | v8+ posts a `mouseMoved` jitter to the browser process before sending Option+X. If it still misses, confirm the cursor is over a thumbnail (DevTools console: `window.__copyurlLog`). |
 | `runFlow ERROR: ... nil value (method 'postToPid')` | Old Hammerspoon API | Update to v8+ which uses `event:post(app)`. |
 | Paste lands nowhere on a fresh Gemini chat | Composer wasn't focused at Cmd+V time | Switch to an active Gemini chat (composer auto-focuses reliably there), or click the composer once before pressing Option+Z. |
+| Gemini window comes to front but nothing is pasted | The Safari WebApp does **not** auto-focus its prompt composer on activation, so `Cmd+V` had no text field to land in. Log showed `send-key cmd+v ok=true` yet nothing appeared. | v21+ focuses the composer through the accessibility API (`focusGeminiComposer`) before pasting, then reads the composer back to verify the paste landed (`paste verify: landed=true`) before pressing Enter. Ensure Hammerspoon has **Accessibility** permission. |
+| Paste lands in the browser instead of Gemini | The flow busy-waited with `hs.timer.usleep`, blocking the Hammerspoon runloop so app activation never completed and the browser stayed frontmost. Log showed `frontmost before paste: Brave Browser`. | v20+ activates Gemini asynchronously via `activateAndWait` (polls with `hs.timer.doAfter`, never blocks the runloop) and only sends keys once Gemini is confirmed frontmost. |
+| Toast says `Option+Z fired` but Gemini gets no paste | Keystrokes didn't reach the Gemini app (focus race / macOS Automation permission drift) | v17+ sends `Cmd+V`/Enter via app-targeted `hs.eventtap` first (Accessibility only), then AppleScript fallback. Reload `~/.hammerspoon/init.lua`, then check `send-key cmd+v ok=...` in `~/Library/Logs/CopyURL.log`. |
 | Toast says `Option+Z fired` but log stops before `pasting payload` | Lua error in the Gemini block (caught by `pcall`) | `tail -30 ~/Library/Logs/CopyURL.log` and look for `runFlow ERROR: ...`. |
 
 For extension-side diagnostics see [../docs/troubleshooting.md](../docs/troubleshooting.md). The Windows section's content-script notes also apply to Mac because the extension is shared.

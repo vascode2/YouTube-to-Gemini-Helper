@@ -1,0 +1,26 @@
+# Normalize line endings: store text as LF in the repo, check out LF everywhere.
+# This prevents the CRLF/LF churn that made the old Google Drive working copy
+# show spurious "modified" diffs on files that were byte-identical apart from EOLs.
+* text=auto eol=lf
+
+# Shell scripts and the git hook must stay LF or they break under bash.
+*.sh    text eol=lf
+.githooks/pre-commit text eol=lf
+
+# Cross-platform source that is fine as LF.
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.lua   text eol=lf
+*.ahk   text eol=lf
+*.service text eol=lf
+*.rules text eol=lf
+
+# Binary assets: never touch EOLs or attempt diffs/merges.
+*.png   binary
+*.gif   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary

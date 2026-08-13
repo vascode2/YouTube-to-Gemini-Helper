@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Gemini fixture</title>
+  <style>
+    body { margin: 0; font-family: Roboto, Arial, sans-serif; background: #131314; color:#e3e3e3; }
+    .composer { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      width: 720px; background: #1e1f20; border-radius: 28px; padding: 14px 18px; }
+    rich-textarea { display:block; }
+    .ql-editor { min-height: 24px; outline: none; color: #e3e3e3; }
+    .send-button { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <!--
+    E2E Gemini fixture. Faithful composer DOM (rich-textarea > ql-editor +
+    ql-clipboard, send button disabled until text), but — unlike
+    scripts/gemini_paste_test.html — it does NOT shim chrome.* or load gemini.js
+    itself. The REAL extension injects gemini.js here via its content_scripts
+    match, so this exercises the genuine chrome.storage handoff end to end.
+  -->
+  <div class="composer">
+    <rich-textarea class="text-input-field_textarea ql-container ql-bubble simplified-input">
+      <div class="ql-editor ql-blank textarea new-input-ui" data-gramm="false"
+           contenteditable="true" role="textbox" aria-multiline="true"
+           aria-label="Enter a prompt for Gemini" data-placeholder="Ask Gemini"><p><br></p></div>
+      <div class="ql-clipboard" contenteditable="true" tabindex="-1"></div>
+    </rich-textarea>
+    <div class="trailing-actions-wrapper">
+      <button class="send-button" aria-label="Send message" disabled aria-disabled="true">send</button>
+    </div>
+  </div>
+
+  <script>
+    // Mirror Gemini: the send button is disabled until the editor has text.
+    const _editor = document.querySelector(".ql-editor");
+    const _sendBtn = document.querySelector(".send-button");
+    const _syncSendState = () => {
+      const hasText = (_editor.textContent || "").trim().length > 0;
+      _sendBtn.disabled = !hasText;
+      if (hasText) { _sendBtn.removeAttribute("aria-disabled"); _editor.classList.remove("ql-blank"); }
+      else { _sendBtn.setAttribute("aria-disabled", "true"); }
+    };
+    new MutationObserver(_syncSendState).observe(_editor, {
+      childList: true, characterData: true, subtree: true,
+    });
+
+    // Expose state the harness reads back via page.evaluate().
+    window.__sendClicked = 0;
+    window.__sendClickedWhileDisabled = 0;
+    _sendBtn.addEventListener("click", () => {
+      if (_sendBtn.disabled) window.__sendClickedWhileDisabled++;
+      else window.__sendClicked++;
+    });
+    window.__geminiState = () => ({
+      editorText: (document.querySelector(".ql-editor").textContent || "").trim(),
+      sendClicked: window.__sendClicked,
+      sendClickedWhileDisabled: window.__sendClickedWhileDisabled,
+    });
+  </script>
+</body>
+</html>
